@@ -165,7 +165,9 @@ LoglineIsAppendEntriesRequest(m) ==
 LoglineIsAppendEntriesResponse(m) ==
     /\ m.mtype = AppendEntriesResponse
     /\ m.mtype = RaftMsgType[logline.event.msg.type]
-    /\ m.msubtype = RaftMsgSubtype[logline.event.msg.type]
+    /\ \/ m.msubtype = RaftMsgSubtype[logline.event.msg.type]
+       \/ /\ logline.event.msg.type = "MsgAppResp"
+          /\ m.msubtype = "snapshot"
     /\ m.mdest   = logline.event.msg.to
     /\ m.msource = logline.event.msg.from
     /\ m.mterm = logline.event.msg.term
@@ -357,29 +359,33 @@ TimeoutIfLogged(i) ==
     /\ Timeout(i)
     /\ ValidateAfterTimeout(i)
 
-\* perform AddNewServer transition if logline indicates so
-AddNewServerIfLogged(i, j) ==
-    /\ LoglineIsNodeEvent("ChangeConf", i)
-    /\ Len(logline.event.prop.cc.changes) = 1
-    /\ logline.event.prop.cc.changes[1].action = "AddNewServer"
-    /\ logline.event.prop.cc.changes[1].nid = j
-    /\ AddNewServer(i, j)
+ApplyChange(change, conf) ==
+    CASE change.action = "AddNewServer" ->
+            [voters   |-> conf.voters \union {change.nid},
+             learners |-> conf.learners \ {change.nid}]
+      [] change.action = "RemoveServer" ->
+            [voters   |-> conf.voters \ {change.nid},
+             learners |-> conf.learners \ {change.nid}]
+      [] change.action = "AddLearner" ->
+            [voters   |-> conf.voters \ {change.nid},
+             learners |-> conf.learners \union {change.nid}]
+      [] OTHER -> conf
 
-\* perform AddLearner transition if logline indicates so
-AddLearnerIfLogged(i, j) ==
+ChangeConfIfLogged(i) ==
     /\ LoglineIsNodeEvent("ChangeConf", i)
-    /\ Len(logline.event.prop.cc.changes) = 1
-    /\ logline.event.prop.cc.changes[1].action = "AddLearner"
-    /\ logline.event.prop.cc.changes[1].nid = j
-    /\ AddLearner(i, j)
-
-\* perform DeleteServer transition if logline indicates so
-DeleteServerIfLogged(i, j) ==
-    /\ LoglineIsNodeEvent("ChangeConf", i)
-    /\ Len(logline.event.prop.cc.changes) = 1
-    /\ logline.event.prop.cc.changes[1].action = "RemoveServer"
-    /\ logline.event.prop.cc.changes[1].nid = j
-    /\ DeleteServer(i, j)
+    /\ ValidatePreStates(i)
+    /\ LET changes == logline.event.prop.cc.changes
+           initialConf == [voters |-> GetConfig(i), learners |-> GetLearners(i)]
+           finalConf == FoldSeq(ApplyChange, initialConf, changes)
+       IN
+           /\ ~IsJointConfig(i)
+           /\ IF pendingConfChangeIndex[i] = 0 THEN
+                   /\ Replicate(i, [newconf |-> finalConf.voters, learners |-> finalConf.learners], ConfigEntry)
+                   /\ pendingConfChangeIndex' = [pendingConfChangeIndex EXCEPT ![i]=Len(log'[i])]
+              ELSE
+                   /\ Replicate(i, <<>>, ValueEntry)
+                   /\ UNCHANGED <<pendingConfChangeIndex>>
+           /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
 
 ApplySimpleConfChangeIfLogged(i) ==
     /\ LoglineIsNodeEvent("ApplyConfChange", i)
@@ -423,6 +429,7 @@ SkipUnusedLogline ==
        \/ LoglineIsBecomeFollowerInUpdateTermOrReturnToFollower
        \/ LoglineIsEvent("ReduceNextIndex") \* shall not be necessary when this is removed from raft
     /\ UNCHANGED <<vars>>
+    /\ StepToNextTrace
 
 TraceNextNonReceiveActions ==
     /\ \/ /\ LoglineIsEvents({"SendRequestVoteRequest", "SendRequestVoteResponse"})
@@ -444,11 +451,7 @@ TraceNextNonReceiveActions ==
        \/ /\ LoglineIsEvent("BecomeCandidate")
           /\ \E i \in Server : TimeoutIfLogged(i)
        \/ /\ LoglineIsEvent("ChangeConf")
-          /\ \E i,j \in Server: AddNewServerIfLogged(i, j)
-       \/ /\ LoglineIsEvent("ChangeConf")
-          /\ \E i,j \in Server: AddLearnerIfLogged(i, j)
-       \/ /\ LoglineIsEvent("ChangeConf")
-          /\ \E i,j \in Server: DeleteServerIfLogged(i, j)
+          /\ \E i \in Server: ChangeConfIfLogged(i)
        \/ /\ LoglineIsEvent("ApplyConfChange")
           /\ \E i \in Server: ApplySimpleConfChangeIfLogged(i)
        \/ /\ LoglineIsEvent("Ready")
@@ -505,5 +508,3 @@ etcd_progress == INSTANCE etcdraft_progress
 etcdProgressSpec == etcd_progress!Init /\ [][etcd_progress!NextDynamic]_etcd_progress!vars
 
 ==================================================================================
-
-
