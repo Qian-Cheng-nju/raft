@@ -1,1 +1,17 @@
 .idea
+
+# --- My Custom Ignores ---
+# TLA+ output traces and binaries
+tla/Trace*
+tla/*.bin
+tla/*.log
+tla/states/
+
+# Large binaries
+*.jar
+
+# Output directories
+output/
+
+# Ignore compiled harness binary
+tools/specula_harness/specula_harness
