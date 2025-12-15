@@ -1,0 +1,12 @@
+{
+  "scenario": "partition_and_recover",
+  "scenario_path": "testdata/replicate_pause.txt",
+  "trace_out": "traces/partition_and_recover.ndjson",
+  "go_version": "go1.24.11",
+  "build_tags": [
+    "with_tla"
+  ],
+  "duration_ms": 88,
+  "git_sha": "413657bfe31d74c66bd055ceecd93629335b13ad",
+  "generated_at": "2025-12-14T02:45:46.896430723Z"
+}

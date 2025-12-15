@@ -1,0 +1,12 @@
+{
+  "scenario": "async_storage_writes",
+  "scenario_path": "testdata/async_storage_writes.txt",
+  "trace_out": "traces/async_storage_writes.ndjson",
+  "go_version": "go1.24.11",
+  "build_tags": [
+    "with_tla"
+  ],
+  "duration_ms": 88,
+  "git_sha": "413657bfe31d74c66bd055ceecd93629335b13ad",
+  "generated_at": "2025-12-14T02:45:47.085141393Z"
+}

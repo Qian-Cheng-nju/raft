@@ -1,0 +1,12 @@
+{
+  "scenario": "snapshot_and_recovery",
+  "scenario_path": "testdata/snapshot_succeed_via_app_resp.txt",
+  "trace_out": "traces/snapshot_and_recovery.ndjson",
+  "go_version": "go1.24.11",
+  "build_tags": [
+    "with_tla"
+  ],
+  "duration_ms": 27,
+  "git_sha": "413657bfe31d74c66bd055ceecd93629335b13ad",
+  "generated_at": "2025-12-14T02:45:46.956707772Z"
+}

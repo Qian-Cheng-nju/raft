@@ -1,0 +1,13 @@
+{
+  "scenario": "basic_election",
+  "scenario_path": "testdata/campaign.txt",
+  "trace_out": "traces/basic.ndjson",
+  "runtime_trace": "traces/basic.out",
+  "go_version": "go1.24.11",
+  "build_tags": [
+    "with_tla"
+  ],
+  "duration_ms": 31,
+  "git_sha": "413657bfe31d74c66bd055ceecd93629335b13ad",
+  "generated_at": "2025-12-13T12:42:29.448915969Z"
+}
