@@ -295,9 +295,16 @@ func traceSendMessage(r *raft, m *raftpb.Message) {
 	switch m.Type {
 	case raftpb.MsgApp:
 		evt = rsmSendAppendEntriesRequest
-		if p, exist := r.trk.Progress[m.From]; exist {
+		if p, exist := r.trk.Progress[m.To]; exist {
 			prop["match"] = p.Match
 			prop["next"] = p.Next
+			// Progress state machine and Inflights flow control fields
+			prop["state"] = p.State.String()
+			prop["paused"] = p.MsgAppFlowPaused
+			prop["inflights_count"] = p.Inflights.Count()
+			if p.State == tracker.StateSnapshot {
+				prop["pending_snapshot"] = p.PendingSnapshot
+			}
 		}
 
 	case raftpb.MsgHeartbeat, raftpb.MsgSnap:
