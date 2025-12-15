@@ -252,14 +252,19 @@ SendPendingMessages(i) ==
     IN /\ messages' = msgs (+) messages
        /\ pendingMessages' = pendingMessages (-) msgs
 
-\* Remove a message from the bag of messages. Used when a server is done
+\* Remove a message from the bag of messages OR pendingMessages. Used when a server is done
 DiscardDirect(m) ==
-    messages' = WithoutMessage(m, messages)
+    IF m \in DOMAIN messages 
+    THEN messages' = WithoutMessage(m, messages) /\ UNCHANGED pendingMessages
+    ELSE pendingMessages' = WithoutMessage(m, pendingMessages) /\ UNCHANGED messages
 
 \* Combination of Send and Discard
 ReplyDirect(response, request) ==
-    /\ pendingMessages' = WithMessage(response, pendingMessages)
-    /\ messages' = WithoutMessage(request, messages)
+    IF request \in DOMAIN messages
+    THEN /\ messages' = WithoutMessage(request, messages)
+         /\ pendingMessages' = WithMessage(response, pendingMessages)
+    ELSE /\ pendingMessages' = WithMessage(response, WithoutMessage(request, pendingMessages))
+         /\ UNCHANGED messages
 
 \* Default: change when needed
  Send(m) == SendDirect(m)
@@ -285,7 +290,13 @@ GetLearners(i) ==
 
 \* Apply conf change log entry to configuration
 ApplyConfigUpdate(i, k) ==
-    [config EXCEPT ![i]= [jointConfig |-> << log[i][k].value.newconf, {} >>, learners |-> log[i][k].value.learners]]
+    LET entry == log[i][k]
+        newVoters == entry.value.newconf
+        newLearners == entry.value.learners
+        enterJoint == IF "enterJoint" \in DOMAIN entry.value THEN entry.value.enterJoint ELSE FALSE
+        outgoing == IF enterJoint THEN entry.value.oldconf ELSE {}
+    IN
+    [config EXCEPT ![i]= [jointConfig |-> << newVoters, outgoing >>, learners |-> newLearners]]
 
 CommitTo(i, c) ==
     commitIndex' = [commitIndex EXCEPT ![i] = Max({@, c})]
@@ -408,7 +419,7 @@ Restart(i) ==
 \* Server i times out and starts a new election.
 \* @type: Int => Bool;
 Timeout(i) == /\ state[i] \in {Follower, Candidate}
-              /\ i \in GetConfig(i)
+              /\ i \in GetConfig(i) \union GetOutgoingConfig(i)
               /\ state' = [state EXCEPT ![i] = Candidate]
               /\ currentTerm' = [currentTerm EXCEPT ![i] = currentTerm[i] + 1]
               /\ votedFor' = [votedFor EXCEPT ![i] = i]
@@ -420,7 +431,7 @@ Timeout(i) == /\ state[i] \in {Follower, Candidate}
 \* @type: (Int, Int) => Bool;
 RequestVote(i, j) ==
     /\ state[i] = Candidate
-    /\ j \in ((GetConfig(i) \union GetLearners(i)) \ votesResponded[i])
+    /\ j \in ((GetConfig(i) \union GetOutgoingConfig(i) \union GetLearners(i)) \ votesResponded[i])
     /\ IF i # j 
         THEN Send([mtype            |-> RequestVoteRequest,
                    mterm            |-> currentTerm[i],
@@ -442,7 +453,7 @@ AppendEntriesInRangeToPeer(subtype, i, j, range) ==
     /\ i /= j
     /\ range[1] <= range[2]
     /\ state[i] = Leader
-    /\ j \in GetConfig(i) \union GetLearners(i)
+    /\ j \in GetConfig(i) \union GetOutgoingConfig(i) \union GetLearners(i)
     \* 新增：检查流控状态，被暂停时不能发送（heartbeat 除外）
     \* 参考：raft.go:407-410, 652-655 maybeSendAppend() 中的 IsPaused 检查
     \* 注意：heartbeat 通过 bcastHeartbeat() 直接发送，不经过 maybeSendAppend()
@@ -542,7 +553,11 @@ SendSnapshot(i, j, index) ==
 \* @type: Int => Bool;
 BecomeLeader(i) ==
     /\ state[i] = Candidate
-    /\ votesGranted[i] \in Quorum(GetConfig(i))
+    /\ IF IsJointConfig(i) THEN
+           /\ (votesGranted[i] \cap GetConfig(i)) \in Quorum(GetConfig(i))
+           /\ (votesGranted[i] \cap GetOutgoingConfig(i)) \in Quorum(GetOutgoingConfig(i))
+       ELSE
+           votesGranted[i] \in Quorum(GetConfig(i))
     /\ state'      = [state EXCEPT ![i] = Leader]
     /\ matchIndex' = [matchIndex EXCEPT ![i] =
                          [j \in Server |-> IF j = i THEN Len(log[i]) ELSE 0]]
@@ -574,6 +589,19 @@ ClientRequest(i, v) ==
     /\ Replicate(i, [val |-> v], ValueEntry)
     /\ UNCHANGED <<messageVars, serverVars, candidateVars, leaderVars, commitIndex, configVars, durableState, progressVars>>
 
+\* Leader i receives a client request AND sends MsgAppResp immediately (mimicking atomic behavior).
+\* Used for implicit replication in Trace Validation.
+ClientRequestAndSend(i, v) ==
+    /\ Replicate(i, [val |-> v], ValueEntry)
+    /\ Send([mtype       |-> AppendEntriesResponse,
+             msubtype    |-> "app",
+             mterm       |-> currentTerm[i],
+             msuccess    |-> TRUE,
+             mmatchIndex |-> Len(log'[i]),
+             msource     |-> i,
+             mdest       |-> i])
+    /\ UNCHANGED <<messages, serverVars, candidateVars, leaderVars, commitIndex, configVars, durableState, progressVars>>
+
 \* Leader i advances its commitIndex.
 \* This is done as a separate step from handling AppendEntries responses,
 \* in part to minimize atomic regions, and in part so that leaders of
@@ -582,12 +610,19 @@ ClientRequest(i, v) ==
 AdvanceCommitIndex(i) ==
     /\ state[i] = Leader
     /\ LET \* The set of servers that agree up through index.
-           Agree(index) == {k \in GetConfig(i) : matchIndex[i][k] >= index}
+           AllVoters == GetConfig(i) \union GetOutgoingConfig(i)
+           Agree(index) == {k \in AllVoters : matchIndex[i][k] >= index}
            logSize == Len(log[i])
            \* logSize == MaxLogLength
            \* The maximum indexes for which a quorum agrees
-           agreeIndexes == {index \in 1..logSize :
-                                Agree(index) \in Quorum(GetConfig(i))}
+           IsCommitted(index) == 
+               IF IsJointConfig(i) THEN
+                   /\ (Agree(index) \cap GetConfig(i)) \in Quorum(GetConfig(i))
+                   /\ (Agree(index) \cap GetOutgoingConfig(i)) \in Quorum(GetOutgoingConfig(i))
+               ELSE
+                   Agree(index) \in Quorum(GetConfig(i))
+
+           agreeIndexes == {index \in 1..logSize : IsCommitted(index)}
            \* New value for commitIndex'[i]
            newCommitIndex ==
               IF /\ agreeIndexes /= {}
@@ -640,8 +675,47 @@ DeleteServer(i, j) ==
             /\ UNCHANGED <<pendingConfChangeIndex>>
     /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
 
+\* Leader i proposes an arbitrary configuration change (compound changes supported).
+ChangeConf(i) ==
+    /\ state[i] = Leader
+    /\ IF pendingConfChangeIndex[i] = 0 THEN
+            \E newVoters \in SUBSET Server, newLearners \in SUBSET Server, enterJoint \in {TRUE, FALSE}:
+                /\ Replicate(i, [newconf |-> newVoters, learners |-> newLearners, enterJoint |-> enterJoint, oldconf |-> GetConfig(i)], ConfigEntry)
+                /\ pendingConfChangeIndex' = [pendingConfChangeIndex EXCEPT ![i]=Len(log'[i])]
+                \* Remove manual Send, rely on AppendEntriesToSelf in trace
+       ELSE
+            /\ Replicate(i, <<>>, ValueEntry)
+            /\ UNCHANGED <<pendingConfChangeIndex>>
+    /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
+
+\* Leader i proposes an arbitrary configuration change AND sends MsgAppResp.
+\* Used for implicit replication in Trace Validation.
+ChangeConfAndSend(i) ==
+    /\ state[i] = Leader
+    /\ IF pendingConfChangeIndex[i] = 0 THEN
+            \E newVoters \in SUBSET Server, newLearners \in SUBSET Server, enterJoint \in {TRUE, FALSE}:
+                /\ Replicate(i, [newconf |-> newVoters, learners |-> newLearners, enterJoint |-> enterJoint, oldconf |-> GetConfig(i)], ConfigEntry)
+                /\ pendingConfChangeIndex' = [pendingConfChangeIndex EXCEPT ![i]=Len(log'[i])]
+                /\ Send([mtype       |-> AppendEntriesResponse,
+                         msubtype    |-> "app",
+                         mterm       |-> currentTerm[i],
+                         msuccess    |-> TRUE,
+                         mmatchIndex |-> Len(log'[i]),
+                         msource     |-> i,
+                         mdest       |-> i])
+       ELSE
+            /\ Replicate(i, <<>>, ValueEntry)
+            /\ UNCHANGED <<pendingConfChangeIndex>>
+            /\ Send([mtype       |-> AppendEntriesResponse,
+                     msubtype    |-> "app",
+                     mterm       |-> currentTerm[i],
+                     msuccess    |-> TRUE,
+                     mmatchIndex |-> Len(log'[i]),
+                     msource     |-> i,
+                     mdest       |-> i])
+    /\ UNCHANGED <<messages, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
+
 ApplySimpleConfChange(i) ==
-    /\ ~IsJointConfig(i)
     /\ LET k == SelectLastInSubSeq(log[i], 1, commitIndex[i], LAMBDA x: x.type = ConfigEntry)
        IN
             /\ k > 0
@@ -789,7 +863,7 @@ HandleRequestVoteResponse(i, j, m) ==
        \/ /\ ~m.mvoteGranted
           /\ UNCHANGED <<votesGranted>>
     /\ Discard(m)
-    /\ UNCHANGED <<pendingMessages, serverVars, votedFor, leaderVars, logVars, configVars, durableState, progressVars>>
+    /\ UNCHANGED <<serverVars, votedFor, leaderVars, logVars, configVars, durableState, progressVars>>
 
 \* @type: (Int, Int, AEREQT, Bool) => Bool;
 RejectAppendEntriesRequest(i, j, m, logOk) ==
@@ -915,7 +989,7 @@ HandleAppendEntriesResponse(i, j, m) ==
              ELSE UNCHANGED msgAppFlowPaused
           /\ UNCHANGED <<progressState, pendingSnapshot, inflights>>
     /\ Discard(m)
-    /\ UNCHANGED <<pendingMessages, serverVars, candidateVars, logVars, configVars, durableState>>
+    /\ UNCHANGED <<serverVars, candidateVars, logVars, configVars, durableState>>
 
 \* Any RPC with a newer term causes the recipient to advance its term first.
 \* @type: (Int, Int, MSG) => Bool;
@@ -930,7 +1004,29 @@ UpdateTerm(i, j, m) ==
 DropStaleResponse(i, j, m) ==
     /\ m.mterm < currentTerm[i]
     /\ Discard(m)
-    /\ UNCHANGED <<pendingMessages, serverVars, candidateVars, leaderVars, logVars, configVars, durableState, progressVars>>
+    /\ UNCHANGED <<serverVars, candidateVars, leaderVars, logVars, configVars, durableState, progressVars>>
+
+\* Combined action: Update term AND handle RequestVoteRequest atomically.
+\* This is needed because raft.go handles term update and vote processing in a single Step call,
+\* and Trace records only one event.
+UpdateTermAndHandleRequestVote(i, j, m) ==
+    /\ m.mtype = RequestVoteRequest
+    /\ m.mterm > currentTerm[i]
+    /\ LET logOk == \/ m.mlastLogTerm > LastTerm(log[i])
+                    \/ /\ m.mlastLogTerm = LastTerm(log[i])
+                       /\ m.mlastLogIndex >= Len(log[i])
+           grant == logOk \* Term is equal (after update), Vote is Nil (after update)
+       IN
+           /\ Reply([mtype        |-> RequestVoteResponse,
+                     mterm        |-> m.mterm,
+                     mvoteGranted |-> grant,
+                     msource      |-> i,
+                     mdest        |-> j],
+                     m)
+           /\ currentTerm' = [currentTerm EXCEPT ![i] = m.mterm]
+           /\ state'       = [state       EXCEPT ![i] = Follower]
+           /\ votedFor'    = [votedFor    EXCEPT ![i] = IF grant THEN j ELSE Nil]
+           /\ UNCHANGED <<candidateVars, leaderVars, logVars, configVars, durableState, progressVars>>
 
 \* Receive a message.
 ReceiveDirect(m) ==
@@ -938,7 +1034,9 @@ ReceiveDirect(m) ==
         j == m.msource
     IN \* Any RPC with a newer term causes the recipient to advance
        \* its term first. Responses with stale terms are ignored.
-    \/ UpdateTerm(i, j, m)
+    \/ UpdateTermAndHandleRequestVote(i, j, m)
+    \/ /\ m.mtype /= RequestVoteRequest
+       /\ UpdateTerm(i, j, m)
     \/  /\ m.mtype = RequestVoteRequest
         /\ HandleRequestVoteRequest(i, j, m)
     \/  /\ m.mtype = RequestVoteResponse
@@ -983,6 +1081,7 @@ NextAsync ==
     \/ \E i,j \in Server : RequestVote(i, j)
     \/ \E i \in Server : BecomeLeader(i)
     \/ \E i \in Server: ClientRequest(i, 0)
+    \/ \E i \in Server: ClientRequestAndSend(i, 0)
     \/ \E i \in Server : AdvanceCommitIndex(i)
     \/ \E i,j \in Server : \E b,e \in matchIndex[i][j]+1..Len(log[i])+1 : AppendEntries(i, j, <<b,e>>)
     \/ \E i \in Server : AppendEntriesToSelf(i)
@@ -1020,6 +1119,8 @@ NextDynamic ==
     \/ \E i, j \in Server : AddNewServer(i, j)
     \/ \E i, j \in Server : AddLearner(i, j)
     \/ \E i, j \in Server : DeleteServer(i, j)
+    \/ \E i \in Server : ChangeConf(i)
+    \/ \E i \in Server : ChangeConfAndSend(i)
     \/ \E i \in Server : ApplySimpleConfChange(i)
 
 \* The specification must start with the initial state and transition according

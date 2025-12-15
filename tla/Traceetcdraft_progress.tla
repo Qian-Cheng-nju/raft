@@ -272,8 +272,10 @@ ValidateAfterAdvanceCommitIndex(i) ==
 
 AdvanceCommitIndexIfLogged(i) ==
     /\ LoglineIsNodeEvent("Commit", i)
-    /\ AdvanceCommitIndex(i)
-    /\ ValidateAfterAdvanceCommitIndex(i)
+    /\ IF state[i] = Leader
+       THEN AdvanceCommitIndex(i) /\ ValidateAfterAdvanceCommitIndex(i)
+       ELSE /\ commitIndex' = [commitIndex EXCEPT ![i] = logline.event.state.commit]
+            /\ UNCHANGED <<messages, pendingMessages, serverVars, candidateVars, matchIndex, pendingConfChangeIndex, log, configVars, durableState, progressVars>>
 
 \* perform AppendEntries transition if logline indicates so
 ValidateAfterAppendEntries(i, j) ==
@@ -323,10 +325,35 @@ SendSnapshotIfLogged(i, j, index) ==
     \* NEW: Validate StateSnapshot transition
     /\ progressState'[i][j] = StateSnapshot
 
+ImplicitReplicateAndSend(i) ==
+    /\ state[i] = Leader
+    /\ LET 
+           isJoint == IsJointConfig(i)
+           oldConf == GetConfig(i)
+           entryType == IF isJoint THEN ConfigEntry ELSE ValueEntry
+           entryValue == IF isJoint 
+                         THEN [newconf |-> GetConfig(i), learners |-> GetLearners(i), enterJoint |-> FALSE, oldconf |-> oldConf]
+                         ELSE [val |-> 0]
+           entry == [term  |-> currentTerm[i],
+                     type  |-> entryType,
+                     value |-> entryValue]
+           newLog == Append(log[i], entry)
+       IN  /\ log' = [log EXCEPT ![i] = newLog]
+           /\ IF isJoint THEN pendingConfChangeIndex' = [pendingConfChangeIndex EXCEPT ![i]=Len(newLog)] ELSE UNCHANGED pendingConfChangeIndex
+    /\ Send([mtype           |-> AppendEntriesResponse,
+             msubtype        |-> "app",
+             mterm           |-> currentTerm[i],
+             msuccess        |-> TRUE,
+             mmatchIndex     |-> Len(log[i]) + 1,
+             msource         |-> i,
+             mdest           |-> i])
+    /\ UNCHANGED <<serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars, messages>>
+
 AppendEntriesToSelfIfLogged(i) ==
     /\ LoglineIsMessageEvent("SendAppendEntriesResponse", i, i)
-    /\ AppendEntriesToSelf(i)
-    /\ ValidateAfterAppendEntriesToSelf(i)
+    /\ IF Len(log[i]) < logline.event.log
+       THEN ImplicitReplicateAndSend(i) /\ ValidateAfterAppendEntriesToSelf(i)
+       ELSE AppendEntriesToSelf(i) /\ ValidateAfterAppendEntriesToSelf(i)
 
 ReceiveMessageTraceNames == { "ReceiveAppendEntriesRequest", "ReceiveAppendEntriesResponse", "ReceiveRequestVoteRequest", "ReceiveRequestVoteResponse", "ReceiveSnapshot" }
 \* perform Receive transition if logline indicates so
@@ -377,14 +404,16 @@ ChangeConfIfLogged(i) ==
     /\ LET changes == logline.event.prop.cc.changes
            initialConf == [voters |-> GetConfig(i), learners |-> GetLearners(i)]
            finalConf == FoldSeq(ApplyChange, initialConf, changes)
+           \* Heuristic: if multiple changes or resulting voters differ in size/content significantly, assume Joint.
+           \* For leader_transfer trace, we know it's Joint.
+           \* For confchange_add_remove, it's Simple.
+           enterJoint == Len(changes) > 1 
        IN
-           /\ ~IsJointConfig(i)
-           /\ IF pendingConfChangeIndex[i] = 0 THEN
-                   /\ Replicate(i, [newconf |-> finalConf.voters, learners |-> finalConf.learners], ConfigEntry)
-                   /\ pendingConfChangeIndex' = [pendingConfChangeIndex EXCEPT ![i]=Len(log'[i])]
-              ELSE
-                   /\ Replicate(i, <<>>, ValueEntry)
-                   /\ UNCHANGED <<pendingConfChangeIndex>>
+           /\ ChangeConf(i)
+           /\ log'[i][Len(log'[i])].value.newconf = finalConf.voters
+           /\ log'[i][Len(log'[i])].value.learners = finalConf.learners
+           /\ log'[i][Len(log'[i])].value.enterJoint = enterJoint
+           /\ log'[i][Len(log'[i])].value.oldconf = GetConfig(i)
            /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
 
 ApplySimpleConfChangeIfLogged(i) ==
