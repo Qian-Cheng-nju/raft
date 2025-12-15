@@ -2,7 +2,7 @@
 
 # --- My Custom Ignores ---
 # TLA+ output traces and binaries
-tla/Trace*
+tla/*TTrace*
 tla/*.bin
 tla/*.log
 tla/states/
