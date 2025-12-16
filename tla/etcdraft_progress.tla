@@ -220,6 +220,9 @@ progressVars == <<progressState, pendingSnapshot, msgAppFlowPaused, inflights>>
 \* All variables; used for stuttering (asserting state hasn't changed).
 vars == <<messageVars, serverVars, candidateVars, leaderVars, logVars, configVars, durableState, progressVars, counterVars>>
 
+\* View：排除 stateConstraintCount，使得只在该计数器上不同的状态被认为是相同的
+\* 这可以显著减少状态空间，因为计数器仅用于限制探索而非算法逻辑
+View == <<messageVars, serverVars, candidateVars, leaderVars, logVars, configVars, durableState, progressVars>>
 
 ----
 \* Helpers
