@@ -30,6 +30,9 @@ EXTENDS Naturals, Integers, Bags, FiniteSets, Sequences, SequencesExt, FiniteSet
 \* The initial and global set of server IDs.
 CONSTANTS InitServer, Server
 
+\* The set of possible values that can be proposed by clients.
+CONSTANT Values
+
 \* Log metadata to distinguish values from configuration changes.
 CONSTANT ValueEntry, ConfigEntry
 
@@ -1112,8 +1115,8 @@ DropMessage(m) ==
 NextAsync == 
     \/ \E i,j \in Server : RequestVote(i, j)
     \/ \E i \in Server : BecomeLeader(i)
-    \/ \E i \in Server: ClientRequest(i, 0)
-    \/ \E i \in Server: ClientRequestAndSend(i, 0)
+    \/ \E i \in Server, v \in Values: ClientRequest(i, v)
+    \* \/ \E i \in Server, v \in Values: ClientRequestAndSend(i, v)
     \/ \E i \in Server : AdvanceCommitIndex(i)
     \/ \E i,j \in Server : \E b,e \in matchIndex[i][j]+1..Len(log[i])+1 : AppendEntries(i, j, <<b,e>>)
     \/ \E i \in Server : AppendEntriesToSelf(i)

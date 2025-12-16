@@ -4,8 +4,9 @@
 
 EXTENDS etcdraft_progress, TLC
 
-\* Symmetry set for server nodes
+\* Symmetry sets for both servers and values
 \* All servers are symmetric - permuting them produces equivalent states
-Symmetry == Permutations(Server)
+\* All values are symmetric - permuting them produces equivalent states
+Symmetry == Permutations(Server) \union Permutations(Values)
 
 ====
