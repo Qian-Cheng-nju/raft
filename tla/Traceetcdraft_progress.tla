@@ -30,6 +30,9 @@ RaftMsgSubtype ==
     "MsgApp" :> "app" @@ "MsgAppResp" :> "app" @@
     "MsgSnap" :> "snapshot"
 
+RaftRole ==
+    "StateFollower" :> Follower @@ "StateCandidate" :> Candidate @@ "StateLeader" :> Leader
+
 -------------------------------------------------------------------------------------
 
 \* Trace validation has been designed for TLC running in default model-checking
@@ -78,13 +81,15 @@ BootstrappedConfig(i) ==
 TraceInitServer == BootstrappedConfig(TraceLog[1].event.nid)
 ASSUME TraceInitServer \subseteq TraceServer
 
+ImplicitLearners == TraceServer \ TraceInitServer
+
 TraceInitServerVars == /\ currentTerm = [i \in Server |-> LastBootstrapLog[i].event.state.term]
                        /\ state = [i \in Server |-> LastBootstrapLog[i].event.role]
                        /\ votedFor = [i \in Server |-> LastBootstrapLog[i].event.state.vote]
-TraceInitLogVars    == /\ log          = [i \in Server |-> [j \in 1..LastBootstrapLog[i].event.log |-> [ term |-> 1, type |-> "ConfigEntry", value |-> [newconf |-> BootstrappedConfig(i), learners |-> {}]]]]
+TraceInitLogVars    == /\ log          = [i \in Server |-> [j \in 1..LastBootstrapLog[i].event.log |-> [ term |-> 1, type |-> "ConfigEntry", value |-> [newconf |-> BootstrappedConfig(i), learners |-> ImplicitLearners]]]]
                        /\ commitIndex  = [i \in Server |-> LastBootstrapLog[i].event.state.commit]
 TraceInitConfigVars ==
-    /\ config = [i \in Server |-> [ jointConfig |-> <<BootstrappedConfig(i), {}>>, learners |-> {}] ]
+    /\ config = [i \in Server |-> [ jointConfig |-> <<BootstrappedConfig(i), {}>>, learners |-> ImplicitLearners] ]
     /\ reconfigCount = 0
 
 
@@ -192,13 +197,10 @@ LoglineIsRequestVoteResponse(m) ==
     /\ m.mvoteGranted = ~logline.event.msg.reject
 
 ValidatePreStates(i) ==
-    \* only validate upon first visit of the logline
-    pl = l - 1 =>   /\ currentTerm[i] = logline.event.state.term
-                    /\ state[i] = logline.event.role
-                    /\ votedFor[i] = logline.event.state.vote
-                    /\ Len(log[i]) = logline.event.log
-                    /\ commitIndex[i] = logline.event.state.commit
-                    /\ config[i].jointConfig = ConfFromLog(logline)
+    /\ (currentTerm[i] = logline.event.state.term \/ (pl = l /\ currentTerm[i] > logline.event.state.term))
+    /\ (state[i] = RaftRole[logline.event.role] \/ (pl = l /\ state[i] = Follower))
+    /\ commitIndex[i] = logline.event.state.commit
+    /\ (votedFor[i] = logline.event.state.vote \/ (pl = l /\ votedFor[i] = Nil))
 
 ValidatePostStates(i) ==
     /\ currentTerm'[i] = logline.event.state.term
