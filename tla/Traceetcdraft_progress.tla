@@ -197,10 +197,11 @@ LoglineIsRequestVoteResponse(m) ==
     /\ m.mvoteGranted = ~logline.event.msg.reject
 
 ValidatePreStates(i) ==
-    /\ (currentTerm[i] = logline.event.state.term \/ (pl = l /\ currentTerm[i] > logline.event.state.term))
-    /\ (state[i] = RaftRole[logline.event.role] \/ (pl = l /\ state[i] = Follower))
-    /\ commitIndex[i] = logline.event.state.commit
-    /\ (votedFor[i] = logline.event.state.vote \/ (pl = l /\ votedFor[i] = Nil))
+    pl = l - 1 =>
+        /\ currentTerm[i] = logline.event.state.term
+        /\ state[i] = RaftRole[logline.event.role]
+        /\ commitIndex[i] = logline.event.state.commit
+        /\ votedFor[i] = logline.event.state.vote
 
 ValidatePostStates(i) ==
     /\ currentTerm'[i] = logline.event.state.term
