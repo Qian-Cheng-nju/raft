@@ -1,0 +1,12 @@
+{
+  "scenario": "slow_follower_after_compaction",
+  "scenario_path": "testdata/slow_follower_after_compaction.txt",
+  "trace_out": "traces/slow_follower_after_compaction.ndjson",
+  "go_version": "go1.24.11",
+  "build_tags": [
+    "with_tla"
+  ],
+  "duration_ms": 99,
+  "git_sha": "038b47a62b200012d605a6ca1a3dd3f602fcf59d",
+  "generated_at": "2025-12-17T05:08:53.372529248Z"
+}

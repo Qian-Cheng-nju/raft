@@ -1,0 +1,12 @@
+{
+  "scenario": "confchange_v1_add_single",
+  "scenario_path": "testdata/confchange_v1_add_single.txt",
+  "trace_out": "traces/confchange_v1_add_single.ndjson",
+  "go_version": "go1.24.11",
+  "build_tags": [
+    "with_tla"
+  ],
+  "duration_ms": 16,
+  "git_sha": "038b47a62b200012d605a6ca1a3dd3f602fcf59d",
+  "generated_at": "2025-12-17T05:08:53.885478392Z"
+}

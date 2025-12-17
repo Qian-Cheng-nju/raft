@@ -1,0 +1,12 @@
+{
+  "scenario": "confchange_v2_add_double_auto",
+  "scenario_path": "testdata/confchange_v2_add_double_auto.txt",
+  "trace_out": "traces/confchange_v2_add_double_auto.ndjson",
+  "go_version": "go1.24.11",
+  "build_tags": [
+    "with_tla"
+  ],
+  "duration_ms": 90,
+  "git_sha": "038b47a62b200012d605a6ca1a3dd3f602fcf59d",
+  "generated_at": "2025-12-17T05:08:54.012657722Z"
+}

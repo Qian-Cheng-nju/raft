@@ -1,0 +1,12 @@
+{
+  "scenario": "forget_leader_read_only_lease_based",
+  "scenario_path": "testdata/forget_leader_read_only_lease_based.txt",
+  "trace_out": "traces/forget_leader_read_only_lease_based.ndjson",
+  "go_version": "go1.24.11",
+  "build_tags": [
+    "with_tla"
+  ],
+  "duration_ms": 26,
+  "git_sha": "038b47a62b200012d605a6ca1a3dd3f602fcf59d",
+  "generated_at": "2025-12-17T05:08:53.06844731Z"
+}
