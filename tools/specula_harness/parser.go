@@ -163,6 +163,7 @@ type ndjsonLogger struct {
 type traceLine struct {
 	Timestamp time.Time          `json:"ts"`
 	Scenario  string             `json:"scenario"`
+	Tag       string             `json:"tag"`
 	Event     *raft.TracingEvent `json:"event"`
 }
 
@@ -192,6 +193,7 @@ func (l *ndjsonLogger) TraceEvent(evt *raft.TracingEvent) {
 	if err := l.enc.Encode(traceLine{
 		Timestamp: time.Now().UTC(),
 		Scenario:  l.scenario,
+		Tag:       "trace",
 		Event:     evt,
 	}); err != nil {
 		log.Printf("state trace encode error: %v", err)
