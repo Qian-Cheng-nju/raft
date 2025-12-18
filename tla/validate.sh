@@ -7,10 +7,11 @@ WORKDIR="$(mktemp -d)"
 TOOLDIR="${WORKDIR}/tool"
 STATEDIR="${WORKDIR}/state"
 FAILFAST=false
+LOG_TO_FILE=false
 PARALLEL=$(nproc)
 
 function show_usage {
-    echo "usage: validate.sh [-p <parallel>] -s <spec> -c <config> <trace files>">&2
+    echo "usage: validate.sh [-p <parallel>] [-l] -s <spec> -c <config> <trace files>">&2
 }
 
 function install_tlaplus {
@@ -53,22 +54,28 @@ function validate {
     local config=${4}
     local tooldir=${5}
     local statedir=${6}
-    local name=$(basename $trace .ndjson)
-    local id=${1}
-    local trace=${2}
-    local spec=${3}
-    local config=${4}
-    local tooldir=${5}
-    local statedir=${6}
-    local name=$(basename $trace .ndjson)
+    local log_to_file=${7}
+    local log=""
 
-    preprocess_log $trace
+    if [ "${log_to_file}" = "true" ]; then
+        log="$(dirname "${config}")/$(basename "${config%.*}").log"
+        mkdir -p "$(dirname "${log}")"
+    fi
+    mkdir -p "${statedir}"
+
+    preprocess_log "${trace}"
 
     set -o pipefail
-    env JSON="${trace}" java -XX:+UseParallelGC -cp ${tooldir}/tla2tools.jar:${tooldir}/CommunityModules-deps.jar tlc2.TLC -config "${config}" "${spec}" -lncheck final -metadir "${statedir}" -fpmem 0.9  | sed -nuE "s/<<\"Progress %:\", ([0-9]+)>>$/${id} \1/p"
+    if [ "${log_to_file}" = "true" ]; then
+        env JSON="${trace}" java -XX:+UseParallelGC -cp ${tooldir}/tla2tools.jar:${tooldir}/CommunityModules-deps.jar tlc2.TLC -config "${config}" "${spec}" -lncheck final -metadir "${statedir}" -fpmem 0.9 2>&1 | tee "${log}" | sed -nuE "s/<<\"Progress %:\", ([0-9]+)>>$/${id} \1/p"
+        local tlc_status=${PIPESTATUS[0]}
+    else
+        env JSON="${trace}" java -XX:+UseParallelGC -cp ${tooldir}/tla2tools.jar:${tooldir}/CommunityModules-deps.jar tlc2.TLC -config "${config}" "${spec}" -lncheck final -metadir "${statedir}" -fpmem 0.9 2>&1 | sed -nuE "s/<<\"Progress %:\", ([0-9]+)>>$/${id} \1/p"
+        local tlc_status=${PIPESTATUS[0]}
+    fi
 
-    if [ "$?" -ne 0 ]; then
-        echo ${id} -1
+    if [ "${tlc_status}" -ne 0 ]; then
+        echo "${id} -1"
     fi
 }
 
@@ -110,13 +117,12 @@ function show_progress {
     fi
 }
 
-while getopts :hs:c:p: flag
+while getopts :hls:c:p: flag
 do
     case "${flag}" in
         s) SPEC=${OPTARG};;
         c) CONFIG=${OPTARG};;
-        p) PARALLEL=${OPTARG};;
-        h|*) show_usage; exit 1;; 
+        l) LOG_TO_FILE=true;;
         p) PARALLEL=${OPTARG};;
         h|*) show_usage; exit 1;; 
     esac
@@ -174,7 +180,7 @@ done < \
     progress[$i]=0
     echo $i ${trace_files[$i]}
 done | \
-xargs -I{} -P ${PARALLEL} bash -c 'validate $@' _ {} $SPEC $CONFIG $TOOLDIR $STATEDIR)
+xargs -I{} -P ${PARALLEL} bash -c 'validate $@' _ {} $SPEC $CONFIG $TOOLDIR $STATEDIR $LOG_TO_FILE)
 
 
 passed=0
