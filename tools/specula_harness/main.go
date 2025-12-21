@@ -24,6 +24,7 @@ type scenarioResolution struct {
 
 type runConfig struct {
 	Scenario       scenarioResolution
+	ScenarioSet    string
 	TraceOut       string
 	RuntimeTrace   string
 	MetadataOut    string
@@ -42,6 +43,13 @@ func main() {
 		return
 	}
 
+	if cfg.ScenarioSet != "" {
+		if err := runSet(cfg); err != nil {
+			log.Fatalf("run set failed: %v", err)
+		}
+		return
+	}
+
 	if err := run(cfg); err != nil {
 		log.Fatalf("specula harness failed: %v", err)
 	}
@@ -50,6 +58,7 @@ func main() {
 func parseFlags() runConfig {
 	var (
 		scenarioFlag     = flag.String("scenario", "basic_election", "Scenario name or path to a datadriven script.")
+		setFlag          = flag.String("set", "", "Run a set of scenarios (e.g., 'progress'). Overrides -scenario.")
 		traceOutFlag     = flag.String("out", "", "Path to NDJSON state trace output (defaults to traces/<scenario>.ndjson).")
 		runtimeTraceFlag = flag.String("runtime-trace", "", "Optional Go runtime trace output (.out).")
 		metadataFlag     = flag.String("meta", "", "Optional metadata sidecar path (defaults to <out>.meta.json).")
@@ -59,22 +68,29 @@ func parseFlags() runConfig {
 	)
 	flag.Parse()
 
-	resolution, err := resolveScenario(*scenarioFlag)
-	if err != nil {
-		log.Fatalf("resolve scenario: %v", err)
+	var resolution scenarioResolution
+	var err error
+	if *setFlag == "" {
+		resolution, err = resolveScenario(*scenarioFlag)
+		if err != nil {
+			log.Fatalf("resolve scenario: %v", err)
+		}
 	}
 
 	traceOut := *traceOutFlag
-	if traceOut == "" {
+	// traceOut default is handled per-scenario in runSet or run if mostly empty,
+	// but here we keep it for the single scenario case.
+	if traceOut == "" && resolution.Name != "" {
 		traceOut = filepath.Join("traces", resolution.Name+".ndjson")
 	}
 	metaOut := *metadataFlag
-	if metaOut == "" {
+	if metaOut == "" && traceOut != "" {
 		metaOut = traceOut + ".meta.json"
 	}
 
 	return runConfig{
 		Scenario:       resolution,
+		ScenarioSet:    *setFlag,
 		TraceOut:       traceOut,
 		RuntimeTrace:   *runtimeTraceFlag,
 		MetadataOut:    metaOut,
@@ -82,6 +98,63 @@ func parseFlags() runConfig {
 		PrintScenario:  *listFlag,
 		SkipValidation: *skipValidateFlag,
 	}
+}
+
+func runSet(baseCfg runConfig) error {
+	var scenarios []string
+	var exclude map[string]bool
+
+	switch baseCfg.ScenarioSet {
+	case "progress":
+		// All scenarios except the 9 incompatible ones
+		exclude = map[string]bool{
+			"prevote":                                true,
+			"prevote_checkquorum":                    true,
+			"checkquorum":                            true,
+			"forget_leader_prevote_checkquorum":      true,
+			"slow_follower_after_compaction":         true,
+			"snapshot_succeed_via_app_resp_behind":  true,
+			"confchange_v2_add_double_auto":          true,
+			"confchange_v2_add_double_implicit":      true,
+			"confchange_v2_add_single_explicit":      true,
+		}
+	case "all":
+		exclude = map[string]bool{}
+	default:
+		return fmt.Errorf("unknown set %q", baseCfg.ScenarioSet)
+	}
+
+	allScenarios := scenarioMap()
+	for name := range allScenarios {
+		if !exclude[name] {
+			scenarios = append(scenarios, name)
+		}
+	}
+
+	var failed []string
+	for _, name := range scenarios {
+		path := allScenarios[name]
+		fmt.Printf("Running scenario: %s\n", name)
+		
+		// Derive config for this specific scenario
+		cfg := baseCfg
+		cfg.Scenario = scenarioResolution{Name: name, Path: path}
+		// Reset outputs to defaults for this scenario
+		cfg.TraceOut = filepath.Join("traces", name+".ndjson")
+		cfg.MetadataOut = cfg.TraceOut + ".meta.json"
+		
+		if err := run(cfg); err != nil {
+			fmt.Printf("FAIL: %s: %v\n", name, err)
+			failed = append(failed, name)
+		} else {
+			fmt.Printf("PASS: %s\n", name)
+		}
+	}
+
+	if len(failed) > 0 {
+		return fmt.Errorf("scenarios failed: %v", failed)
+	}
+	return nil
 }
 
 func run(cfg runConfig) error {
@@ -229,6 +302,7 @@ func listScenarios() error {
 
 func scenarioMap() map[string]string {
 	return map[string]string{
+		"basic":                                 filepath.Join("testdata", "campaign.txt"),
 		"basic_election":                        filepath.Join("testdata", "campaign.txt"),
 		"confchange_add_remove":                 filepath.Join("testdata", "confchange_v2_add_single_auto.txt"),
 		"leader_transfer":                       filepath.Join("testdata", "confchange_v2_replace_leader.txt"),

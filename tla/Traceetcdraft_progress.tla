@@ -66,11 +66,12 @@ TraceServer == TLCEval(FoldSeq(
         FirstNonBootstrapLogIndex == SelectInSeq(TraceLog, LAMBDA x: x.event.nid = i /\ x.event.name \notin {"InitState", "BecomeFollower", "ApplyConfChange"})
         LastBootstrapLogIndexUpperBound == IF FirstNonBootstrapLogIndex = 0 THEN Len(TraceLog) ELSE FirstNonBootstrapLogIndex-1
     IN
+        IF FirstBootstrapLogIndex = 0 THEN {} ELSE
         { k \in FirstBootstrapLogIndex..LastBootstrapLogIndexUpperBound: TraceLog[k].event.nid = i }
 
  BootstrapLogIndices == UNION { BootstrapLogIndicesForServer(i): i \in Server }
 
-LastBootstrapLog == [ i \in Server |-> TraceLog[Max(BootstrapLogIndicesForServer(i))] ]
+LastBootstrapLog == [ i \in Server |-> IF BootstrapLogIndicesForServer(i) = {} THEN TraceLog[1] ELSE TraceLog[Max(BootstrapLogIndicesForServer(i))] ]
 
 BootstrappedConfig(i) ==
     IF LastBootstrapLog[i].event.name = "ApplyConfChange" THEN
@@ -81,13 +82,13 @@ BootstrappedConfig(i) ==
 TraceInitServer == BootstrappedConfig(TraceLog[1].event.nid)
 ASSUME TraceInitServer \subseteq TraceServer
 
-ImplicitLearners == TraceServer \ TraceInitServer
+ImplicitLearners == {}
 
-TraceInitServerVars == /\ currentTerm = [i \in Server |-> LastBootstrapLog[i].event.state.term]
-                       /\ state = [i \in Server |-> LastBootstrapLog[i].event.role]
-                       /\ votedFor = [i \in Server |-> LastBootstrapLog[i].event.state.vote]
-TraceInitLogVars    == /\ log          = [i \in Server |-> [j \in 1..LastBootstrapLog[i].event.log |-> [ term |-> 1, type |-> "ConfigEntry", value |-> [newconf |-> BootstrappedConfig(i), learners |-> ImplicitLearners]]]]
-                       /\ commitIndex  = [i \in Server |-> LastBootstrapLog[i].event.state.commit]
+TraceInitServerVars == /\ currentTerm = [i \in Server |-> IF BootstrapLogIndicesForServer(i)={} THEN 0 ELSE LastBootstrapLog[i].event.state.term]
+                       /\ state = [i \in Server |-> IF BootstrapLogIndicesForServer(i)={} THEN Follower ELSE LastBootstrapLog[i].event.role]
+                       /\ votedFor = [i \in Server |-> IF BootstrapLogIndicesForServer(i)={} THEN "0" ELSE LastBootstrapLog[i].event.state.vote]
+TraceInitLogVars    == /\ log          = [i \in Server |-> IF BootstrapLogIndicesForServer(i)={} THEN <<>> ELSE [j \in 1..LastBootstrapLog[i].event.log |-> [ term |-> 1, type |-> "ConfigEntry", value |-> [newconf |-> BootstrappedConfig(i), learners |-> ImplicitLearners]]]]
+                       /\ commitIndex  = [i \in Server |-> IF BootstrapLogIndicesForServer(i)={} THEN 0 ELSE LastBootstrapLog[i].event.state.commit]
 TraceInitConfigVars ==
     /\ config = [i \in Server |-> [ jointConfig |-> <<BootstrappedConfig(i), {}>>, learners |-> ImplicitLearners] ]
     /\ reconfigCount = 0

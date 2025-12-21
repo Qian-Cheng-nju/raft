@@ -647,7 +647,7 @@ AddNewServer(i, j) ==
        ELSE
             /\ Replicate(i, <<>>, ValueEntry)
             /\ UNCHANGED <<pendingConfChangeIndex>>
-    /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
+    /\ UNCHANGED <<messageVars, serverVars, candidateVars, commitIndex, configVars, progressVars>>
 
 \* Leader i adds a leaner j to the cluster.
 AddLearner(i, j) ==
@@ -660,7 +660,7 @@ AddLearner(i, j) ==
        ELSE
             /\ Replicate(i, <<>>, ValueEntry)
             /\ UNCHANGED <<pendingConfChangeIndex>>
-    /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
+    /\ UNCHANGED <<messageVars, serverVars, candidateVars, commitIndex, configVars, progressVars>>
 
 \* Leader i removes a server j (possibly itself) from the cluster.
 DeleteServer(i, j) ==
@@ -673,7 +673,7 @@ DeleteServer(i, j) ==
        ELSE
             /\ Replicate(i, <<>>, ValueEntry)
             /\ UNCHANGED <<pendingConfChangeIndex>>
-    /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
+    /\ UNCHANGED <<messageVars, serverVars, candidateVars, commitIndex, configVars, progressVars>>
 
 \* Leader i proposes an arbitrary configuration change (compound changes supported).
 ChangeConf(i) ==
@@ -686,7 +686,7 @@ ChangeConf(i) ==
        ELSE
             /\ Replicate(i, <<>>, ValueEntry)
             /\ UNCHANGED <<pendingConfChangeIndex>>
-    /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
+    /\ UNCHANGED <<messageVars, serverVars, candidateVars, commitIndex, configVars, progressVars>>
 
 \* Leader i proposes an arbitrary configuration change AND sends MsgAppResp.
 \* Used for implicit replication in Trace Validation.
@@ -972,22 +972,28 @@ HandleAppendEntriesResponse(i, j, m) ==
           /\ ClearMsgAppFlowPausedOnUpdate(i, j)
           \* 新增：StateProbe → StateReplicate 状态转换
           \* 参考：progress.go:186-204 MaybeUpdate() 中的 BecomeReplicate() 调用
-          \* 当成功复制后，从探测模式转换到正常复制模式
-          /\ IF progressState[i][j] \in {StateProbe, StateSnapshot}
-             THEN progressState' = [progressState EXCEPT ![i][j] = StateReplicate]
-             ELSE UNCHANGED progressState
+          \* 参考：raft.go:1519-1522 handleAppendEntriesResponse() 中的条件判断
+          \* 关键：只有在 MaybeUpdate 返回 true（即 matchIndex 实际更新）
+          \*       或者 matchIndex 已经等于 response index 时才转换
+          /\ LET maybeUpdated == m.mmatchIndex > matchIndex[i][j]
+                 alreadyMatched == m.mmatchIndex = matchIndex[i][j]
+             IN IF progressState[i][j] \in {StateProbe, StateSnapshot}
+                   /\ (maybeUpdated \/ (alreadyMatched /\ progressState[i][j] = StateProbe))
+                THEN progressState' = [progressState EXCEPT ![i][j] = StateReplicate]
+                ELSE UNCHANGED progressState
           /\ IF progressState[i][j] = StateSnapshot
              THEN pendingSnapshot' = [pendingSnapshot EXCEPT ![i][j] = 0]
              ELSE UNCHANGED pendingSnapshot
        \/ /\ \lnot m.msuccess \* not successful
           /\ UNCHANGED <<leaderVars>>
-          \* 新增：StateProbe 时清零 msgAppFlowPaused（允许重试）
-          \* 参考：progress.go:226-254 MaybeDecrTo()
-          \* 关键：StateReplicate 时不清零，保持流控状态
-          /\ IF progressState[i][j] = StateProbe
-             THEN ClearMsgAppFlowPausedOnDecrTo(i, j)
-             ELSE UNCHANGED msgAppFlowPaused
-          /\ UNCHANGED <<progressState, pendingSnapshot, inflights>>
+          \* Fix: Explicitly expand macros to ensure StateReplicate -> StateProbe and Unpause works
+          /\ IF progressState[i][j] = StateReplicate
+             THEN /\ progressState' = [progressState EXCEPT ![i][j] = StateProbe]
+                  /\ msgAppFlowPaused' = [msgAppFlowPaused EXCEPT ![i][j] = FALSE]
+                  /\ pendingSnapshot' = [pendingSnapshot EXCEPT ![i][j] = 0]
+                  /\ inflights' = [inflights EXCEPT ![i][j] = {}]
+             ELSE /\ UNCHANGED <<progressState, pendingSnapshot, inflights>>
+                  /\ msgAppFlowPaused' = [msgAppFlowPaused EXCEPT ![i][j] = FALSE]
     /\ Discard(m)
     /\ UNCHANGED <<serverVars, candidateVars, logVars, configVars, durableState>>
 
