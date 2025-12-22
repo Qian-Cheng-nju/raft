@@ -14,10 +14,11 @@ MEMORY="2G"
 WORKERS="auto"
 
 # 超时时间（分钟），0 表示无限制
-TIMEOUT_MINUTES=0
+TIMEOUT_MINUTES=60
 
 # 状态深度限制（0 表示无限制）
-MAX_DEPTH=0
+# 建议: 20-30 可以在合理时间内完成
+MAX_DEPTH=25
 
 # 是否启用对称性优化 (true/false)
 # 注意：对称性可能导致某些错误被忽略，谨慎使用

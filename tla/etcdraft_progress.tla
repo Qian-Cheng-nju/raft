@@ -1350,6 +1350,70 @@ InflightsMonotonicInv ==
                 /\ maxIdx >= minIdx
                 /\ maxIdx - minIdx < MaxInflightMsgs
 
+\* ============================================================================
+\* NEW: Additional strong invariants based on code analysis
+\* Reference: progress.go line 37-38, 40, 48, 140, 148, 156-157, 210
+\* ============================================================================
+
+\* Invariant: MatchIndexLessThanLogInv
+\* THE FUNDAMENTAL INVARIANT: Match < Next in progress.go
+\* In TLA+: matchIndex represents Match, and Next is implicitly tracked
+\* We verify: matchIndex[i][j] <= Len(log[i]) for active replication
+\* Reference: progress.go:37 "Invariant: 0 <= Match < Next"
+MatchIndexLessThanLogInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ j /= i) =>
+            matchIndex[i][j] <= Len(log[i])
+
+\* Invariant: MatchIndexNonNegativeInv
+\* Match is always non-negative (0 <= Match)
+\* Reference: progress.go:37 "Invariant: 0 <= Match < Next"
+MatchIndexNonNegativeInv ==
+    \A i \in Server : \A j \in Server :
+        matchIndex[i][j] >= 0
+
+\* Invariant: InflightsAboveMatchInv
+\* All inflight indices must be > matchIndex (they are in the (Match, Next) interval)
+\* Reference: progress.go:34-35 "entries in (Match, Next) interval are in flight"
+InflightsAboveMatchInv ==
+    \A i \in Server : \A j \in Server :
+        state[i] = Leader =>
+            \A idx \in inflights[i][j] : idx > matchIndex[i][j]
+
+\* Invariant: SnapshotPendingAboveMatchInv
+\* In StateSnapshot: PendingSnapshot should be > matchIndex
+\* Reference: progress.go:40, 156 - Next == PendingSnapshot + 1, and Next > Match
+SnapshotPendingAboveMatchInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ progressState[i][j] = StateSnapshot
+         /\ pendingSnapshot[i][j] > 0) =>
+            pendingSnapshot[i][j] > matchIndex[i][j]
+
+\* Invariant: MsgAppFlowPausedConsistencyInv
+\* In StateReplicate: If not paused, inflights should not be full
+\* Reference: progress.go:174 - MsgAppFlowPaused = Inflights.Full()
+MsgAppFlowPausedConsistencyInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ progressState[i][j] = StateReplicate
+         /\ ~msgAppFlowPaused[i][j]) =>
+            ~InflightsFull(i, j)
+
+\* Invariant: ProbeOneInflightMaxInv
+\* Stronger version: In StateProbe, at most 1 inflight (confirms ProbeLimitInv)
+\* Reference: progress.go:53-55 "sends at most one replication message"
+ProbeOneInflightMaxInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ progressState[i][j] = StateProbe) =>
+            InflightsCount(i, j) <= 1
+
+\* Invariant: SnapshotNoInflightsStrictInv
+\* In StateSnapshot, inflights MUST be exactly 0
+\* Reference: progress.go:119-126 ResetState() calls inflights.reset()
+SnapshotNoInflightsStrictInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ progressState[i][j] = StateSnapshot) =>
+            InflightsCount(i, j) = 0
+
 \* Aggregate all Progress-related invariants
 ProgressSafety ==
     /\ ProbePauseInv
@@ -1365,6 +1429,14 @@ ProgressSafety ==
     /\ LeaderSelfReplicateInv
     /\ SnapshotStateInv
     /\ InflightsMonotonicInv
+    \* NEW: Additional strong invariants from code analysis
+    /\ MatchIndexLessThanLogInv
+    /\ MatchIndexNonNegativeInv
+    /\ InflightsAboveMatchInv
+    /\ SnapshotPendingAboveMatchInv
+    /\ MsgAppFlowPausedConsistencyInv
+    /\ ProbeOneInflightMaxInv
+    /\ SnapshotNoInflightsStrictInv
 
 -----
 

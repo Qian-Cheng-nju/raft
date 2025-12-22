@@ -53,11 +53,20 @@ TraceLog ==
     TLCEval(IF "MAX_TRACE" \in DOMAIN IOEnv THEN SubSeq(OriginTraceLog, 1, atoi(IOEnv.MAX_TRACE)) ELSE OriginTraceLog)
 
 TraceServer == TLCEval(FoldSeq(
-    LAMBDA x, y: y \cup IF  /\ x.event.name = "ChangeConf"
-                            /\ "changes" \in DOMAIN x.event.prop.cc
-                            /\ x.event.prop.cc.changes[1].action \in {"AddNewServer", "AddLearner"}
-                            THEN {x.event.nid, x.event.prop.cc.changes[1].nid}
-                            ELSE {x.event.nid},
+    LAMBDA x, y: y \cup 
+        {x.event.nid} \cup
+        (IF "msg" \in DOMAIN x.event /\ "to" \in DOMAIN x.event.msg THEN {x.event.msg.to} ELSE {}) \cup
+        (IF x.event.name = "ChangeConf" /\ "changes" \in DOMAIN x.event.prop.cc
+         THEN { x.event.prop.cc.changes[k].nid : k \in 1..Len(x.event.prop.cc.changes) }
+         ELSE {}) \cup
+        (IF x.event.name = "ApplyConfChange" /\ "newconf" \in DOMAIN x.event.prop.cc THEN ToSet(x.event.prop.cc.newconf) ELSE {}),
+    {}, TraceLog))
+
+AllChangeConfNids == TLCEval(FoldSeq(
+    LAMBDA x, y: y \cup 
+        IF x.event.name = "ChangeConf" /\ "changes" \in DOMAIN x.event.prop.cc
+        THEN { x.event.prop.cc.changes[k].nid : k \in 1..Len(x.event.prop.cc.changes) }
+        ELSE {},
     {}, TraceLog))
 
  BootstrapLogIndicesForServer(i) ==
@@ -82,7 +91,7 @@ BootstrappedConfig(i) ==
 TraceInitServer == BootstrappedConfig(TraceLog[1].event.nid)
 ASSUME TraceInitServer \subseteq TraceServer
 
-ImplicitLearners == {}
+ImplicitLearners == TraceServer \ (TraceInitServer \cup AllChangeConfNids)
 
 TraceInitServerVars == /\ currentTerm = [i \in Server |-> IF BootstrapLogIndicesForServer(i)={} THEN 0 ELSE LastBootstrapLog[i].event.state.term]
                        /\ state = [i \in Server |-> IF BootstrapLogIndicesForServer(i)={} THEN Follower ELSE LastBootstrapLog[i].event.role]
