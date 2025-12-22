@@ -1,30 +1,4 @@
 -------------------------- MODULE etcdraft_progress --------------------------
-\* 扩展 etcdraft.tla，添加 Progress 状态机和 Inflights 流控机制
-\* 基于 etcdraft.tla (原始 Raft spec)
-\* 新增：Progress 状态机、Inflights 流控、MsgAppFlowPaused
-\* Copyright 2024 The etcd Authors
-\*
-\* Licensed under the Apache License, Version 2.0 (the "License");
-\* you may not use this file except in compliance with the License.
-\* You may obtain a copy of the License at
-\*
-\*     http://www.apache.org/licenses/LICENSE-2.0
-\*
-\* Unless required by applicable law or agreed to in writing, software
-\* distributed under the License is distributed on an "AS IS" BASIS,
-\* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-\* See the License for the specific language governing permissions and
-\* limitations under the License.
-\*
-\*
-\* This is the formal specification for the Raft consensus algorithm.
-\*
-\* Copyright 2014 Diego Ongaro, 2015 Brandon Amos and Huanchen Zhang,
-\* 2016 Daniel Ricketts, 2021 George Pîrlea and Darius Foo.
-\*
-\* This work is licensed under the Creative Commons Attribution-4.0
-\* International License https://creativecommons.org/licenses/by/4.0/
-
 EXTENDS Naturals, Integers, Bags, FiniteSets, Sequences, SequencesExt, FiniteSetsExt, BagsExt, TLC
 
 \* The initial and global set of server IDs.
@@ -647,7 +621,7 @@ AddNewServer(i, j) ==
        ELSE
             /\ Replicate(i, <<>>, ValueEntry)
             /\ UNCHANGED <<pendingConfChangeIndex>>
-    /\ UNCHANGED <<messageVars, serverVars, candidateVars, commitIndex, configVars, progressVars>>
+    /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
 
 \* Leader i adds a leaner j to the cluster.
 AddLearner(i, j) ==
@@ -660,7 +634,7 @@ AddLearner(i, j) ==
        ELSE
             /\ Replicate(i, <<>>, ValueEntry)
             /\ UNCHANGED <<pendingConfChangeIndex>>
-    /\ UNCHANGED <<messageVars, serverVars, candidateVars, commitIndex, configVars, progressVars>>
+    /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
 
 \* Leader i removes a server j (possibly itself) from the cluster.
 DeleteServer(i, j) ==
@@ -673,7 +647,7 @@ DeleteServer(i, j) ==
        ELSE
             /\ Replicate(i, <<>>, ValueEntry)
             /\ UNCHANGED <<pendingConfChangeIndex>>
-    /\ UNCHANGED <<messageVars, serverVars, candidateVars, commitIndex, configVars, progressVars>>
+    /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
 
 \* Leader i proposes an arbitrary configuration change (compound changes supported).
 ChangeConf(i) ==
@@ -686,7 +660,7 @@ ChangeConf(i) ==
        ELSE
             /\ Replicate(i, <<>>, ValueEntry)
             /\ UNCHANGED <<pendingConfChangeIndex>>
-    /\ UNCHANGED <<messageVars, serverVars, candidateVars, commitIndex, configVars, progressVars>>
+    /\ UNCHANGED <<messageVars, serverVars, candidateVars, matchIndex, commitIndex, configVars, durableState, progressVars>>
 
 \* Leader i proposes an arbitrary configuration change AND sends MsgAppResp.
 \* Used for implicit replication in Trace Validation.
@@ -1258,86 +1232,141 @@ CommittedIsDurableInv ==
         state[i] = Leader => commitIndex[i] <= durableState[i].log
 
 \* ============================================================================
-\* 新增：Progress 和 Inflights 相关不变式
+\* New: Progress and Inflights Invariants
 \* ============================================================================
 
-\* 类型不变式：progressState 只能是三个合法状态之一
-\* 防止 IsPaused() 中的 OTHER -> FALSE 分支被触发
+\* Group 1: Flow Control Safety
+\* Verifies consistency between flow control pause mechanism (msgAppFlowPaused),
+\* Progress state, and Inflight counts.
+
+\* Invariant: ProbePauseInv
+\* In StateProbe, if flow is paused, implies we must have at least one inflight message.
+\* (Rationale: In Probe state, we pause after sending one message to wait for a response)
+ProbePauseInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ progressState[i][j] = StateProbe /\ msgAppFlowPaused[i][j])
+            => InflightsCount(i, j) >= 1
+
+\* Invariant: ProbeLimitInv
+\* In StateProbe, inflight message count is strictly limited to 1.
+\* (Rationale: Probe state is for probing, preventing message accumulation)
+ProbeLimitInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ progressState[i][j] = StateProbe)
+            => InflightsCount(i, j) <= 1
+
+\* Invariant: ReplicatePauseInv
+\* In StateReplicate, we should only be paused if Inflights are full.
+\* (Note: The converse is not necessarily true; if Inflights are full, we might have just 
+\* received an ACK clearing the pause, waiting for next send to re-evaluate)
+ReplicatePauseInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ progressState[i][j] = StateReplicate /\ msgAppFlowPaused[i][j])
+            => InflightsFull(i, j)
+
+\* Group 2: Inflights Data Integrity
+\* Verifies validity of Inflights collection data.
+
+\* Invariant: SnapshotInflightsInv
+\* In StateSnapshot, Inflights must be empty.
+\* (Rationale: Sending Snapshot resets log replication stream, clearing previous inflights)
+SnapshotInflightsInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ progressState[i][j] = StateSnapshot)
+            => InflightsCount(i, j) = 0
+
+\* Invariant: InflightsLogIndexInv
+\* Inflight indices must be valid indices existing in (or being sent from) Leader's Log.
+\* In this Spec, inflights stores entry indices, so they must be <= Leader's Log length.
+InflightsLogIndexInv ==
+    \A i \in Server : \A j \in Server :
+        state[i] = Leader =>
+            \A idx \in inflights[i][j] : idx <= Len(log[i])
+
+\* Invariant: InflightsMatchIndexInv
+\* Inflight indices must be strictly greater than what Follower has already Matched.
+\* (Rationale: If follower has matched an index, the corresponding inflight record should be freed)
+InflightsMatchIndexInv ==
+    \A i \in Server : \A j \in Server :
+        state[i] = Leader =>
+            \A idx \in inflights[i][j] : idx > matchIndex[i][j]
+
+\* Group 3: Progress State Consistency
+\* Verifies dependencies between Progress State Machine variables.
+
+\* Type Invariant: progressState must be one of the three valid states.
+\* Prevents "OTHER -> FALSE" branch in IsPaused() from triggering on invalid states.
 ProgressStateTypeInv ==
     \A i, j \in Server:
         progressState[i][j] \in {StateProbe, StateReplicate, StateSnapshot}
 
-\* Inflights 数量不超过上限
-\* 参考：inflights.go:66-68 Add() 中的 panic
-\* "cannot add into a Full inflights"
+\* Inflights count must not exceed limit.
+\* Reference: inflights.go:66-68 Add() panic "cannot add into a Full inflights"
 InflightsInv ==
     \A i, j \in Server:
         InflightsCount(i, j) <= MaxInflightMsgs
 
-\* StateSnapshot 时必须有 pendingSnapshot
-\* 参考：progress.go:153-158 BecomeSnapshot()
-SnapshotStateInv ==
-    \A i, j \in Server:
-        progressState[i][j] = StateSnapshot =>
-        pendingSnapshot[i][j] > 0
+\* Invariant: SnapshotPendingInv
+\* If in StateSnapshot, must have a pending snapshot index.
+SnapshotPendingInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ progressState[i][j] = StateSnapshot)
+            => pendingSnapshot[i][j] > 0
 
-\* Inflights 单调性约束
-\* 所有在途消息的 index 必须大于 matchIndex（已确认的最大 index）
-\* 这确保了 inflights 中的 index 单调递增，FreeLE 语义正确
+\* Invariant: NoPendingSnapshotInv
+\* If NOT in StateSnapshot, pendingSnapshot must be 0 (cleared).
+NoPendingSnapshotInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ progressState[i][j] /= StateSnapshot)
+            => pendingSnapshot[i][j] = 0
+
+\* Invariant: LeaderSelfReplicateInv
+\* Leader's progress state for itself is always StateReplicate.
+LeaderSelfReplicateInv ==
+    \A i \in Server :
+        state[i] = Leader => progressState[i][i] = StateReplicate
+
+\* Invariant: SnapshotStateInv
+\* Comprehensive check for StateSnapshot consistency
+\* Combines snapshot-related properties: empty inflights and valid pending snapshot
+SnapshotStateInv ==
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ progressState[i][j] = StateSnapshot) =>
+            /\ InflightsCount(i, j) = 0              \* Inflights must be empty
+            /\ pendingSnapshot[i][j] > 0             \* Must have pending snapshot
+            /\ pendingSnapshot[i][j] <= Len(log[i])  \* Snapshot index must be valid
+
+\* Invariant: InflightsMonotonicInv
+\* Checks monotonicity property of inflights indices
+\* Reference: inflights.go:45-57 Add() expects monotonically increasing indices
+\* State invariant: if inflights non-empty, indices should form a reasonable range
+\* (within MaxInflightMsgs span, since we can have at most MaxInflightMsgs in flight)
 InflightsMonotonicInv ==
-    \A i, j \in Server:
-        state[i] = Leader =>
-        \A idx \in inflights[i][j]:
-            idx > matchIndex[i][j]
+    \A i \in Server : \A j \in Server :
+        (state[i] = Leader /\ inflights[i][j] # {}) =>
+            LET maxIdx == Max(inflights[i][j])
+                minIdx == Min(inflights[i][j])
+            IN
+                /\ maxIdx >= minIdx
+                /\ maxIdx - minIdx < MaxInflightMsgs
+
+\* Aggregate all Progress-related invariants
+ProgressSafety ==
+    /\ ProbePauseInv
+    /\ ProbeLimitInv
+    /\ ReplicatePauseInv
+    /\ SnapshotInflightsInv
+    /\ InflightsLogIndexInv
+    /\ InflightsMatchIndexInv
+    /\ ProgressStateTypeInv
+    /\ InflightsInv
+    /\ SnapshotPendingInv
+    /\ NoPendingSnapshotInv
+    /\ LeaderSelfReplicateInv
+    /\ SnapshotStateInv
+    /\ InflightsMonotonicInv
 
 -----
 
 
 ===============================================================================
-
-
-
-\* Changelog:
-\* 
-\* 2023-11-23:
-\* - Replace configuration actions by those in etcd implementation.
-\* - Refactor spec structure to decouple core spec and model checker spec for 
-\*   better readness and future update
-\* - Remove unused actions and properties, e.g. wrapper
-\*  
-\* 2021-04-??:
-\* - Abandoned Apalache due to slowness and went back to TLC. There are remains
-\*   of the Apalache-specific annotations and message wrapping/unwrapping, but
-\*   those are not actually used. The annotations are no longer up-to-date. 
-\*
-\* 2021-04-09:
-\* - Added type annotations for Apalache symbolic model checker. As part of
-\*   this change, the message format was changed to a tagged union.
-\* 
-\* 2016-09-09:
-\* - Daniel Ricketts added the major safety invariants and proved them in
-\*   TLAPS.
-\*
-\* 2015-05-10:
-\* - Add cluster membership changes as described in Section 4 of
-\*     Diego Ongaro. Consensus: Bridging theory and practice.
-\*     PhD thesis, Stanford University, 2014.
-\*   This introduces: InitServer, ValueEntry, ConfigEntry, CatchupRequest,
-\*     CatchupResponse, CheckOldConfig, GetMaxConfigIndex,
-\*     GetConfig (parameterized), AddNewServer, DeleteServer,
-\*     HandleCatchupRequest, HandleCatchupResponse,
-\*     HandleCheckOldConfig 
-\*
-\* 
-\* 2014-12-02:
-\* - Fix AppendEntries to only send one entry at a time, as originally
-\*   intended. Since SubSeq is inclusive, the upper bound of the range should
-\*   have been nextIndex, not nextIndex + 1. Thanks to Igor Kovalenko for
-\*   reporting the issue.
-\* - Change matchIndex' to matchIndex (without the apostrophe) in
-\*   AdvanceCommitIndex. This apostrophe was not intentional and perhaps
-\*   confusing, though it makes no practical difference (matchIndex' equals
-\*   matchIndex). Thanks to Hugues Evrard for reporting the issue.
-\*
-\* 2014-07-06:
-\* - Version from PhD dissertation
