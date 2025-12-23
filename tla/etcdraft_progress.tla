@@ -46,11 +46,11 @@ CONSTANTS
     StateSnapshot    \* Snapshot state: need to send snapshot
 
 \* State constraint 和流控配置常量
-\* MaxDrops, MaxDups, MaxCrashs, MaxTimeouts, MaxStepDown, MaxClientReqs, MaxHeartbeats: 
+\* MaxDrops, MaxDups, MaxCrashs, MaxTimeouts, MaxStepDown, MaxClientReqs, MaxHeartbeats, MaxMsg: 
 \*   用于限制模型检查的状态空间，通过 stateConstraintCount 计数器跟踪
 \* MaxInflightMsgs: 
 \*   流控配置，限制每个 Progress 的最大在途消息数（参考 raft.go:205-210）
-CONSTANT MaxDrops, MaxDups, MaxCrashs, MaxTimeouts, MaxStepDown, MaxClientReqs, MaxHeartbeats, MaxInflightMsgs
+CONSTANT MaxDrops, MaxDups, MaxCrashs, MaxTimeouts, MaxStepDown, MaxClientReqs, MaxHeartbeats, MaxMsg, MaxInflightMsgs
 
 ASSUME MaxInflightMsgs \in Nat /\ MaxInflightMsgs > 0
 
@@ -1097,7 +1097,7 @@ NextAsync ==
     \/ \E i,j \in Server : RequestVote(i, j)
     \/ \E i \in Server : BecomeLeader(i)
     \/ \E i \in Server, v \in Values: ClientRequest(i, v)
-    \/ \E i \in Server: ClientRequestAndSend(i, 0)
+    \* \/ \E i \in Server: ClientRequestAndSend(i, 0)
     \/ \E i \in Server : AdvanceCommitIndex(i)
     \/ \E i,j \in Server : \E b,e \in matchIndex[i][j]+1..Len(log[i])+1 : AppendEntries(i, j, <<b,e>>)
     \/ \E i \in Server : AppendEntriesToSelf(i)
@@ -1142,6 +1142,11 @@ NextDynamic ==
 \* The specification must start with the initial state and transition according
 \* to Next.
 Spec == Init /\ [][Next]_vars
+
+\* State Constraint: Limit the total number of messages in the system
+\* This helps keep the state space manageable during model checking
+StateConstraint == 
+    /\ (MaxMsg = 0 \/ BagCardinality(messages) + BagCardinality(pendingMessages) < MaxMsg)
 
 (***************************************************************************)
 (* The main safety properties are below                                    *)
