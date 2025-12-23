@@ -32,21 +32,21 @@ CONSTANTS
     \* @type: Str;
     AppendEntriesResponse
 
-\* 新增：Progress 状态常量
-\* 参考：tracker/state.go:20-33
+\* New: Progress state constants
+\* Reference: tracker/state.go:20-33
 CONSTANTS
     \* @type: Str;
-    StateProbe,      \* 探测状态：不知道 follower 的 last index
+    StateProbe,      \* Probe state: don't know follower's last index
     \* @type: Str;
-    StateReplicate,  \* 复制状态：正常快速复制
+    StateReplicate,  \* Replicate state: normal fast replication
     \* @type: Str;
-    StateSnapshot    \* 快照状态：需要发送快照
+    StateSnapshot    \* Snapshot state: need to send snapshot
 
-\* 新增：流控配置常量
-\* 参考：raft.go:205-210, Config.MaxInflightMsgs
+\* New: Flow control configuration constants
+\* Reference: raft.go:205-210, Config.MaxInflightMsgs
 CONSTANT
     \* @type: Int;
-    MaxInflightMsgs  \* 最大在途消息数（每个 Progress）
+    MaxInflightMsgs  \* Max inflight messages (per Progress)
 
 ASSUME MaxInflightMsgs \in Nat /\ MaxInflightMsgs > 0
 
@@ -135,48 +135,48 @@ VARIABLE
     durableState
 
 \* ============================================================================
-\* 新增：Progress 状态机变量
-\* 参考：tracker/progress.go:30-117
+\* New: Progress state machine variables
+\* Reference: tracker/progress.go:30-117
 \* ============================================================================
 
 VARIABLE
     \* @type: Int -> (Int -> Str);
-    progressState    \* Leader i 维护的每个节点 j 的状态
-                     \* 取值：StateProbe | StateReplicate | StateSnapshot
+    progressState    \* State of each node j maintained by Leader i
+                     \* Values: StateProbe | StateReplicate | StateSnapshot
 
 VARIABLE
     \* @type: Int -> (Int -> Int);
-    pendingSnapshot  \* Leader i 到节点 j 的 pending snapshot index
-                     \* 仅在 progressState[i][j] = StateSnapshot 时有意义
+    pendingSnapshot  \* Pending snapshot index from Leader i to node j
+                     \* Meaningful only when progressState[i][j] = StateSnapshot
 
 VARIABLE
     \* @type: Int -> (Int -> Bool);
-    msgAppFlowPaused \* Leader i 到节点 j 的消息流是否被暂停
-                     \* 这是一个缓存标志，在 SentEntries 时更新
+    msgAppFlowPaused \* Whether message flow from Leader i to node j is paused
+                     \* This is a cached flag, updated at SentEntries
 
 \* ============================================================================
-\* 新增：Inflights 流控变量
-\* 参考：tracker/inflights.go:28-40
+\* New: Inflights flow control variables
+\* Reference: tracker/inflights.go:28-40
 \* ============================================================================
 
 VARIABLE
     \* @type: Int -> (Int -> Set(Int));
-    inflights        \* Leader i 到节点 j 的在途消息集合
-                     \* 存储每个在途 AppendEntries 消息的 last entry index
+    inflights        \* Set of inflight messages from Leader i to node j
+                     \* Stores the last entry index of each inflight AppendEntries message
                      \*
-                     \* 建模简化：用集合表示，实际代码用环形缓冲区 (FIFO)
-                     \* 理由：消息按 index 递增顺序添加，FreeLE 释放 <= index 的消息
-                     \*       对于验证流控约束（数量上限），集合足够
+                     \* Modeling simplification: represented as a set, actual code uses a ring buffer (FIFO)
+                     \* Reason: messages are added in increasing index order, FreeLE frees messages <= index
+                     \*         For verifying flow control constraints (capacity limit), a set is sufficient
                      \*
-                     \* 约束：spec 强制 Add 的 index 严格单调递增（见 AddInflight）
+                     \* Constraint: spec enforces that Add index is strictly monotonically increasing (see AddInflight)
                      \*
-                     \* 局限（接受的风险）：
-                     \* 1. 无法检测重复 index 的 bug（集合自动去重）
-                     \*    - 如果代码重复添加同一 index，InflightsCount 被低估
-                     \*    - 无法捕捉"重复重试撑爆容量"的问题
-                     \* 2. 无法验证环形缓冲区实现细节（grow() 等）
+                     \* Limitations (accepted risks):
+                     \* 1. Cannot detect duplicate index bugs (set automatically deduplicates)
+                     \*    - If code repeatedly adds the same index, InflightsCount is underestimated
+                     \*    - Cannot capture "repeated retries blowing up capacity" issues
+                     \* 2. Cannot verify ring buffer implementation details (grow(), etc.)
                      \*
-                     \* 如需更精确：可改为 Bag (多重集) 或 Seq (序列)
+                     \* If more precision is needed: can be changed to Bag (multiset) or Seq (sequence)
 
 progressVars == <<progressState, pendingSnapshot, msgAppFlowPaused, inflights>>
 
@@ -287,39 +287,39 @@ PersistState(i) ==
     ]]
 
 \* ============================================================================
-\* 新增：Progress 和 Inflights 辅助函数
+\* New: Progress and Inflights helper functions
 \* ============================================================================
 
-\* 计算 inflights 中的消息数量
-\* 参考：inflights.go:87-89 Count()
+\* Calculate the number of messages in inflights
+\* Reference: inflights.go:87-89 Count()
 InflightsCount(i, j) == Cardinality(inflights[i][j])
 
-\* 判断 inflights 是否已满
-\* 参考：inflights.go:74-76 Full()
+\* Determine if inflights is full
+\* Reference: inflights.go:74-76 Full()
 InflightsFull(i, j) == InflightsCount(i, j) >= MaxInflightMsgs
 
-\* 判断 Progress 是否被暂停（无法发送新的 AppendEntries）
-\* 参考：progress.go:262-273 IsPaused()
-\* 关键：只检查 msgAppFlowPaused 标志，该标志在 SentEntries() 时更新
+\* Determine if Progress is paused (cannot send new AppendEntries)
+\* Reference: progress.go:262-273 IsPaused()
+\* Key: only checks msgAppFlowPaused flag, which is updated at SentEntries()
 IsPaused(i, j) ==
     CASE progressState[i][j] = StateProbe      -> msgAppFlowPaused[i][j]
       [] progressState[i][j] = StateReplicate  -> msgAppFlowPaused[i][j]
       [] progressState[i][j] = StateSnapshot   -> TRUE
       [] OTHER -> FALSE
 
-\* 添加一个 inflight 消息
-\* 参考：inflights.go:45-57 Add()
-\* 注意：这是一个纯赋值操作，单调性由 InflightsMonotonicInv 不变式检查
+\* Add an inflight message
+\* Reference: inflights.go:45-57 Add()
+\* Note: This is a pure assignment operation; monotonicity is checked by the InflightsMonotonicInv invariant
 AddInflight(i, j, lastIndex) ==
     inflights' = [inflights EXCEPT ![i][j] = @ \cup {lastIndex}]
 
-\* 释放 index 及之前的所有 inflight 消息
-\* 参考：inflights.go:59-72 FreeLE()
+\* Free all inflight messages up to and including index
+\* Reference: inflights.go:59-72 FreeLE()
 FreeInflightsLE(i, j, index) ==
     inflights' = [inflights EXCEPT ![i][j] = {idx \in @ : idx > index}]
 
-\* 重置 inflights（状态转换时）
-\* 参考：progress.go:121-126 ResetState() 调用 inflights.reset()
+\* Reset inflights (on state transition)
+\* Reference: progress.go:121-126 ResetState() calls inflights.reset()
 ResetInflights(i, j) ==
     inflights' = [inflights EXCEPT ![i][j] = {}]
 
@@ -347,9 +347,9 @@ InitDurableState ==
         config |-> config[i]
     ]]
 
-\* 新增：Progress 和 Inflights 初始化
-\* 参考：raft.go:798-808 becomeFollower 中的 Progress 初始化
-\* 所有 Progress 初始为 StateProbe（StateType 零值是 0，即 StateProbe）
+\* New: Progress and Inflights initialization
+\* Reference: Progress initialization in raft.go:798-808 becomeFollower
+\* All Progress initialized to StateProbe (StateType zero value is 0, i.e., StateProbe)
 InitProgressVars ==
     /\ progressState = [i \in Server |-> [j \in Server |-> StateProbe]]
     /\ pendingSnapshot = [i \in Server |-> [j \in Server |-> 0]]
@@ -383,7 +383,7 @@ Restart(i) ==
     /\ votedFor' = [votedFor EXCEPT ![i] = durableState[i].votedFor]
     /\ log' = [log EXCEPT ![i] = SubSeq(@, 1, durableState[i].log)]
     /\ config' = [config EXCEPT ![i] = durableState[i].config]
-    \* 新增：重置 Progress 变量（volatile state，不持久化）
+    \* New: Reset Progress variables (volatile state, not persisted)
     /\ progressState' = [progressState EXCEPT ![i] = [j \in Server |-> StateProbe]]
     /\ msgAppFlowPaused' = [msgAppFlowPaused EXCEPT ![i] = [j \in Server |-> FALSE]]
     /\ pendingSnapshot' = [pendingSnapshot EXCEPT ![i] = [j \in Server |-> 0]]
@@ -428,9 +428,9 @@ AppendEntriesInRangeToPeer(subtype, i, j, range) ==
     /\ range[1] <= range[2]
     /\ state[i] = Leader
     /\ j \in GetConfig(i) \union GetOutgoingConfig(i) \union GetLearners(i)
-    \* 新增：检查流控状态，被暂停时不能发送（heartbeat 除外）
-    \* 参考：raft.go:407-410, 652-655 maybeSendAppend() 中的 IsPaused 检查
-    \* 注意：heartbeat 通过 bcastHeartbeat() 直接发送，不经过 maybeSendAppend()
+    \* New: Check flow control state; cannot send when paused (except heartbeat)
+    \* Reference: IsPaused check in raft.go:407-410, 652-655 maybeSendAppend()
+    \* Note: heartbeat is sent directly via bcastHeartbeat(), bypassing maybeSendAppend()
     /\ (subtype = "heartbeat" \/ ~IsPaused(i, j))
     /\ LET
         prevLogIndex == range[1] - 1
@@ -444,14 +444,14 @@ AppendEntriesInRangeToPeer(subtype, i, j, range) ==
         lastEntry == Min({Len(log[i]), range[2]-1})
         entries == SubSeq(log[i], range[1], lastEntry)
         commit == IF subtype = "heartbeat" THEN Min({commitIndex[i], matchIndex[i][j]}) ELSE Min({commitIndex[i], lastEntry})
-        \* 新增：计算发送的 entries 数量（用于更新 msgAppFlowPaused）
+        \* New: Calculate number of entries sent (for updating msgAppFlowPaused)
         numEntries == Len(entries)
-        \* 新增：计算更新后的 inflights（如果发送了 entries）
+        \* New: Calculate updated inflights (if entries were sent)
         newInflights == IF lastEntry >= range[1]
                         THEN inflights[i][j] \cup {lastEntry}
                         ELSE inflights[i][j]
-        \* 新增：计算更新后的 msgAppFlowPaused
-        \* 参考：progress.go:165-185 SentEntries()
+        \* New: Calculate updated msgAppFlowPaused
+        \* Reference: progress.go:165-185 SentEntries()
         newMsgAppFlowPaused ==
             CASE progressState[i][j] = StateReplicate
                     -> Cardinality(newInflights) >= MaxInflightMsgs
@@ -467,13 +467,13 @@ AppendEntriesInRangeToPeer(subtype, i, j, range) ==
                     mcommitIndex   |-> commit,
                     msource        |-> i,
                     mdest          |-> j])
-          \* 新增：更新 inflights（如果发送了 entries）
+          \* New: Update inflights (if entries were sent)
           /\ IF lastEntry >= range[1]
              THEN AddInflight(i, j, lastEntry)
              ELSE UNCHANGED inflights
-          \* 新增：更新 msgAppFlowPaused
+          \* New: Update msgAppFlowPaused
           /\ msgAppFlowPaused' = [msgAppFlowPaused EXCEPT ![i][j] = newMsgAppFlowPaused]
-          \* 新增：其他 Progress 变量保持不变
+          \* New: Other Progress variables remain unchanged
           /\ UNCHANGED <<progressState, pendingSnapshot>>
           /\ UNCHANGED <<messages, serverVars, candidateVars, leaderVars, logVars, configVars, durableState>> 
 
@@ -515,8 +515,8 @@ SendSnapshot(i, j, index) ==
                     mcommitIndex   |-> commit,
                     msource        |-> i,
                     mdest          |-> j])
-          \* 新增：转换到 StateSnapshot，设置 pendingSnapshot
-          \* 参考：raft.go:684 sendSnapshot() -> pr.BecomeSnapshot()
+          \* New: Transition to StateSnapshot, set pendingSnapshot
+          \* Reference: raft.go:684 sendSnapshot() -> pr.BecomeSnapshot()
           /\ progressState' = [progressState EXCEPT ![i][j] = StateSnapshot]
           /\ msgAppFlowPaused' = [msgAppFlowPaused EXCEPT ![i][j] = FALSE]
           /\ pendingSnapshot' = [pendingSnapshot EXCEPT ![i][j] = index]
@@ -535,9 +535,9 @@ BecomeLeader(i) ==
     /\ state'      = [state EXCEPT ![i] = Leader]
     /\ matchIndex' = [matchIndex EXCEPT ![i] =
                          [j \in Server |-> IF j = i THEN Len(log[i]) ELSE 0]]
-    \* 新增：初始化 Progress 状态
-    \* 参考：raft.go:903-934 becomeLeader()
-    \* Leader 自己设为 StateReplicate，其他节点设为 StateProbe
+    \* New: Initialize Progress state
+    \* Reference: raft.go:903-934 becomeLeader()
+    \* Leader sets itself to StateReplicate, others to StateProbe
     /\ progressState' = [progressState EXCEPT ![i] =
                             [j \in Server |-> IF j = i THEN StateReplicate ELSE StateProbe]]
     /\ msgAppFlowPaused' = [msgAppFlowPaused EXCEPT ![i] =
@@ -720,34 +720,34 @@ StepDownToFollower(i) ==
     /\ UNCHANGED <<messageVars, candidateVars, leaderVars, logVars, configVars, durableState, progressVars>>
 
 \* ============================================================================
-\* 新增：Progress 状态转换辅助函数
-\* 参考：progress.go:119-158
+\* New: Progress state transition helper functions
+\* Reference: progress.go:119-158
 \* ============================================================================
 
-\* ResetState - 状态转换时的通用逻辑
-\* 参考：progress.go:121-126 ResetState()
-\* 清零 MsgAppFlowPaused、PendingSnapshot 和 Inflights
+\* ResetState - common logic for state transitions
+\* Reference: progress.go:121-126 ResetState()
+\* Clear MsgAppFlowPaused, PendingSnapshot and Inflights
 ResetProgressState(i, j, newState) ==
     /\ progressState' = [progressState EXCEPT ![i][j] = newState]
     /\ msgAppFlowPaused' = [msgAppFlowPaused EXCEPT ![i][j] = FALSE]
     /\ pendingSnapshot' = [pendingSnapshot EXCEPT ![i][j] = 0]
     /\ ResetInflights(i, j)
 
-\* BecomeProbe - 转换到 StateProbe
-\* 参考：progress.go:130-143
-\* 关键：清零 MsgAppFlowPaused，允许流控恢复
+\* BecomeProbe - transition to StateProbe
+\* Reference: progress.go:130-143
+\* Key: clear MsgAppFlowPaused to allow flow control recovery
 ProgressBecomeProbe(i, j) ==
     ResetProgressState(i, j, StateProbe)
 
-\* BecomeReplicate - 转换到 StateReplicate
-\* 参考：progress.go:146-149
-\* 关键：清零 MsgAppFlowPaused，允许流控恢复
+\* BecomeReplicate - transition to StateReplicate
+\* Reference: progress.go:146-149
+\* Key: clear MsgAppFlowPaused to allow flow control recovery
 ProgressBecomeReplicate(i, j) ==
     ResetProgressState(i, j, StateReplicate)
 
-\* BecomeSnapshot - 转换到 StateSnapshot
-\* 参考：progress.go:153-158
-\* 关键：设置 pendingSnapshot，MsgAppFlowPaused 被清零但 IsPaused() 仍返回 true
+\* BecomeSnapshot - transition to StateSnapshot
+\* Reference: progress.go:153-158
+\* Key: set pendingSnapshot, MsgAppFlowPaused is cleared but IsPaused() still returns true
 ProgressBecomeSnapshot(i, j, snapIndex) ==
     /\ progressState' = [progressState EXCEPT ![i][j] = StateSnapshot]
     /\ msgAppFlowPaused' = [msgAppFlowPaused EXCEPT ![i][j] = FALSE]
@@ -755,47 +755,47 @@ ProgressBecomeSnapshot(i, j, snapIndex) ==
     /\ ResetInflights(i, j)
 
 \* ============================================================================
-\* 新增：MsgAppFlowPaused 更新函数 - 关键的流控恢复路径
+\* New: MsgAppFlowPaused update functions - critical flow control recovery paths
 \* ============================================================================
 
-\* UpdateMsgAppFlowPausedOnSent - 发送消息时更新 MsgAppFlowPaused
-\* 参考：progress.go:165-185 SentEntries()
+\* UpdateMsgAppFlowPausedOnSent - update MsgAppFlowPaused when sending messages
+\* Reference: progress.go:165-185 SentEntries()
 \* StateReplicate: MsgAppFlowPaused = Inflights.Full()
-\* StateProbe: MsgAppFlowPaused = true (如果发送了 entries)
+\* StateProbe: MsgAppFlowPaused = true (if entries were sent)
 UpdateMsgAppFlowPausedOnSent(i, j, sentEntries) ==
     msgAppFlowPaused' = [msgAppFlowPaused EXCEPT ![i][j] =
         CASE progressState[i][j] = StateReplicate
-                -> InflightsFull(i, j)  \* 注意：用更新后的 inflights
+                -> InflightsFull(i, j)  \* Note: uses updated inflights
           [] progressState[i][j] = StateProbe /\ sentEntries > 0
                 -> TRUE
           [] OTHER -> @
     ]
 
-\* ClearMsgAppFlowPausedOnUpdate - 收到成功响应时清零
-\* 参考：progress.go:205-213 MaybeUpdate()
-\* 这是流控恢复的主要路径之一
+\* ClearMsgAppFlowPausedOnUpdate - clear on successful response
+\* Reference: progress.go:205-213 MaybeUpdate()
+\* This is one of the main flow control recovery paths
 ClearMsgAppFlowPausedOnUpdate(i, j) ==
     msgAppFlowPaused' = [msgAppFlowPaused EXCEPT ![i][j] = FALSE]
 
-\* ClearMsgAppFlowPausedOnDecrTo - 收到拒绝响应时清零
-\* 参考：progress.go:226-254 MaybeDecrTo()
-\* 注意：仅在 StateProbe 时清零，StateReplicate 时不清零
+\* ClearMsgAppFlowPausedOnDecrTo - clear on rejected response
+\* Reference: progress.go:226-254 MaybeDecrTo()
+\* Note: only clears in StateProbe, not in StateReplicate
 ClearMsgAppFlowPausedOnDecrTo(i, j) ==
     msgAppFlowPaused' = [msgAppFlowPaused EXCEPT ![i][j] = FALSE]
 
 \* ============================================================================
-\* MsgAppFlowPaused 生命周期总结
+\* MsgAppFlowPaused lifecycle summary
 \* ============================================================================
-\* 设置为 TRUE：
+\* Set to TRUE:
 \* 1. SentEntries() in StateReplicate: = Inflights.Full()
-\* 2. SentEntries() in StateProbe: = true (如果 entries > 0)
+\* 2. SentEntries() in StateProbe: = true (if entries > 0)
 \*
-\* 清零为 FALSE：
-\* 1. ResetState() - 所有状态转换 (BecomeProbe/Replicate/Snapshot)
-\* 2. MaybeUpdate() - 收到成功的 AppendEntries 响应
-\* 3. MaybeDecrTo() - 收到拒绝的 AppendEntries 响应（仅 StateProbe）
+\* Clear to FALSE:
+\* 1. ResetState() - all state transitions (BecomeProbe/Replicate/Snapshot)
+\* 2. MaybeUpdate() - received successful AppendEntries response
+\* 3. MaybeDecrTo() - received rejected AppendEntries response (StateProbe only)
 \*
-\* 这确保了流控可以恢复，不会永久卡住！
+\* This ensures flow control can recover and won't permanently block!
 
 ----
 \* Message handlers
@@ -940,15 +940,15 @@ HandleAppendEntriesResponse(i, j, m) ==
     /\ \/ /\ m.msuccess \* successful
           /\ matchIndex' = [matchIndex EXCEPT ![i][j] = Max({@, m.mmatchIndex})]
           /\ UNCHANGED <<pendingConfChangeIndex>>
-          \* 新增：释放已确认的 inflights，清零 msgAppFlowPaused
-          \* 参考：raft.go:1260-1289 handleAppendEntries() 中的 MaybeUpdate() 调用
+          \* New: Free confirmed inflights, clear msgAppFlowPaused
+          \* Reference: MaybeUpdate() call in raft.go:1260-1289 handleAppendEntries()
           /\ FreeInflightsLE(i, j, m.mmatchIndex)
           /\ ClearMsgAppFlowPausedOnUpdate(i, j)
-          \* 新增：StateProbe → StateReplicate 状态转换
-          \* 参考：progress.go:186-204 MaybeUpdate() 中的 BecomeReplicate() 调用
-          \* 参考：raft.go:1519-1522 handleAppendEntriesResponse() 中的条件判断
-          \* 关键：只有在 MaybeUpdate 返回 true（即 matchIndex 实际更新）
-          \*       或者 matchIndex 已经等于 response index 时才转换
+          \* New: StateProbe → StateReplicate state transition
+          \* Reference: BecomeReplicate() call in progress.go:186-204 MaybeUpdate()
+          \* Reference: condition check in raft.go:1519-1522 handleAppendEntriesResponse()
+          \* Key: only transition when MaybeUpdate returns true (i.e., matchIndex actually updated)
+          \*      or matchIndex already equals response index
           /\ LET maybeUpdated == m.mmatchIndex > matchIndex[i][j]
                  alreadyMatched == m.mmatchIndex = matchIndex[i][j]
              IN IF progressState[i][j] \in {StateProbe, StateSnapshot}
