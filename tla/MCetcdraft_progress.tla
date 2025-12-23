@@ -24,12 +24,16 @@ ASSUME DropLimit \in Nat
 CONSTANT DuplicateLimit
 ASSUME DuplicateLimit \in Nat
 
-\* NEW: Counters for fault injection events
-VARIABLE restartCount
-VARIABLE dropCount
-VARIABLE duplicateCount
+CONSTANT StepDownLimit
+ASSUME StepDownLimit \in Nat
 
-faultVars == <<restartCount, dropCount, duplicateCount>>
+CONSTANT HeartbeatLimit
+ASSUME HeartbeatLimit \in Nat
+
+\* NEW: Counters for fault injection events (aggregated in a record for easier View definition)
+VARIABLE constraintCounters
+
+faultVars == <<constraintCounters>>
 
 etcd == INSTANCE etcdraft_progress
 
@@ -83,24 +87,33 @@ MCClientRequest(i, v) ==
 
 \* NEW: Limit node restarts/crashes to reduce state space explosion
 MCRestart(i) ==
-    /\ restartCount < RestartLimit
+    /\ constraintCounters.restart < RestartLimit
     /\ etcd!Restart(i)
-    /\ restartCount' = restartCount + 1
-    /\ UNCHANGED <<dropCount, duplicateCount>>
+    /\ constraintCounters' = [constraintCounters EXCEPT !.restart = @ + 1]
 
 \* NEW: Limit message drops to reduce state space explosion
 MCDropMessage(m) ==
-    /\ dropCount < DropLimit
+    /\ constraintCounters.drop < DropLimit
     /\ etcd!DropMessage(m)
-    /\ dropCount' = dropCount + 1
-    /\ UNCHANGED <<restartCount, duplicateCount>>
+    /\ constraintCounters' = [constraintCounters EXCEPT !.drop = @ + 1]
 
 \* NEW: Limit message duplicates to reduce state space explosion
 MCDuplicateMessage(m) ==
-    /\ duplicateCount < DuplicateLimit
+    /\ constraintCounters.duplicate < DuplicateLimit
     /\ etcd!DuplicateMessage(m)
-    /\ duplicateCount' = duplicateCount + 1
-    /\ UNCHANGED <<restartCount, dropCount>>
+    /\ constraintCounters' = [constraintCounters EXCEPT !.duplicate = @ + 1]
+
+\* NEW: Limit heartbeats
+MCHeartbeat(i, j) ==
+    /\ constraintCounters.heartbeat < HeartbeatLimit
+    /\ etcd!Heartbeat(i, j)
+    /\ constraintCounters' = [constraintCounters EXCEPT !.heartbeat = @ + 1]
+
+\* NEW: Limit step downs
+MCStepDown(i) ==
+    /\ constraintCounters.stepDown < StepDownLimit
+    /\ etcd!StepDownToFollower(i)
+    /\ constraintCounters' = [constraintCounters EXCEPT !.stepDown = @ + 1]
 
 \* Limit how many identical append entries messages each node can send to another
 \* Limit number of duplicate messages sent to the same server
@@ -125,9 +138,7 @@ MCSend(msg) ==
 \* NEW: Initialize fault injection counters
 MCInit ==
     /\ etcd!Init
-    /\ restartCount = 0
-    /\ dropCount = 0
-    /\ duplicateCount = 0
+    /\ constraintCounters = [restart |-> 0, drop |-> 0, duplicate |-> 0, stepDown |-> 0, heartbeat |-> 0]
 
 \* NEW: Next state formula with limited fault injection
 MCNextAsync ==
@@ -145,8 +156,7 @@ MCNextAsync ==
        /\ UNCHANGED faultVars
     \/ /\ \E i \in Server : etcd!AppendEntriesToSelf(i)
        /\ UNCHANGED faultVars
-    \/ /\ \E i,j \in Server : etcd!Heartbeat(i, j)
-       /\ UNCHANGED faultVars
+    \/ /\ \E i,j \in Server : MCHeartbeat(i, j)
     \/ /\ \E i,j \in Server : \E index \in 1..commitIndex[i] : etcd!SendSnapshot(i, j, index)
        /\ UNCHANGED faultVars
     \/ /\ \E m \in DOMAIN messages : etcd!Receive(m)
@@ -155,8 +165,7 @@ MCNextAsync ==
        /\ UNCHANGED faultVars
     \/ /\ \E i \in Server : etcd!Ready(i)
        /\ UNCHANGED faultVars
-    \/ /\ \E i \in Server : etcd!StepDownToFollower(i)
-       /\ UNCHANGED faultVars
+    \/ /\ \E i \in Server : MCStepDown(i)
 
 MCNextCrash == \E i \in Server : MCRestart(i)
 
@@ -200,7 +209,8 @@ mc_etcdSpec ==
 \* via the Symmetry option in cfg file.
 Symmetry == Permutations(Server)
 
-\* Include all variables in the view, which is similar to defining no view.
-View == << mc_vars >>
+\* View used for state space reduction. 
+\* It excludes 'constraintCounters' so that states differing only in counters are considered identical.
+ModelView == << vars >>
 
 =============================================================================
