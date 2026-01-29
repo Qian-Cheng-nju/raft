@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 
+# Use fixed tool directory to avoid re-downloading
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TOOLDIR="${TOOLDIR:-$(cd "$SCRIPT_DIR/../../../../.." && pwd)/lib}"
 WORKDIR="$(mktemp -d)"
-TOOLDIR="${WORKDIR}/tool"
-STATEDIR="${WORKDIR}/state"
-WORKDIR="$(mktemp -d)"
-TOOLDIR="${WORKDIR}/tool"
 STATEDIR="${WORKDIR}/state"
 FAILFAST=false
 PARALLEL=$(nproc)
@@ -14,10 +13,15 @@ function show_usage {
 }
 
 function install_tlaplus {
-    echo -n "Downloading TLA+ tools ... "
-    wget -qN https://nightly.tlapl.us/dist/tla2tools.jar -P ${TOOLDIR}
-    wget -qN https://github.com/tlaplus/CommunityModules/releases/latest/download/CommunityModules-deps.jar -P ${TOOLDIR}
-    echo "done."
+    if [ -f "${TOOLDIR}/tla2tools.jar" ] && [ -f "${TOOLDIR}/CommunityModules-deps.jar" ]; then
+        echo "Using existing TLA+ tools from ${TOOLDIR}"
+    else
+        echo -n "Downloading TLA+ tools ... "
+        mkdir -p ${TOOLDIR}
+        wget -qN https://nightly.tlapl.us/dist/tla2tools.jar -P ${TOOLDIR}
+        wget -qN https://github.com/tlaplus/CommunityModules/releases/latest/download/CommunityModules-deps.jar -P ${TOOLDIR}
+        echo "done."
+    fi
 }
 PARALLEL=$(nproc)
 
